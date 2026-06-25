@@ -169,7 +169,8 @@ export default function Home() {
 
           // Auto trigger file save using iframe or hidden anchor (non-blocking)
           try {
-            const downloadLink = `${API_URL}${data.result.downloadUrl}`
+            const rawUrl = data.result.downloadUrl
+            const downloadLink = rawUrl.startsWith('http') ? rawUrl : `${API_URL}${rawUrl}`
             const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
             const isSafari = /Safari/.test(navigator.userAgent) && !/Chrome/.test(navigator.userAgent);
 
@@ -726,7 +727,7 @@ export default function Home() {
                           className="w-full h-14 bg-gradient-to-r from-primary to-accent hover:from-primary/95 hover:to-accent/95 text-white font-bold rounded-2xl shadow-xl shadow-primary/20 gap-2 text-base active:scale-[0.99] transition-transform focus-visible:ring-2 focus-visible:ring-accent"
                         >
                           <a
-                            href={`${API_URL}${downloadingJob.result.downloadUrl}`}
+                            href={downloadingJob.result.downloadUrl.startsWith('http') ? downloadingJob.result.downloadUrl : `${API_URL}${downloadingJob.result.downloadUrl}`}
                             download={downloadingJob.result.filename}
                             target="_blank"
                             rel="noopener noreferrer"
@@ -758,7 +759,7 @@ export default function Home() {
                           className="rounded-xl font-bold text-xs gap-1.5 hover:bg-white/5 px-4 h-11 focus-visible:ring-2 focus-visible:ring-accent"
                         >
                           <a
-                            href={`${API_URL}${downloadingJob.result.downloadUrl}${downloadingJob.result.downloadUrl.includes('?') ? '&' : '?'}inline=true`}
+                            href={(() => { const u = downloadingJob.result.downloadUrl; const base = u.startsWith('http') ? u : `${API_URL}${u}`; return base.includes('?') ? `${base}&inline=true` : `${base}?inline=true`; })()}
                             target="_blank"
                             rel="noopener noreferrer"
                           >
