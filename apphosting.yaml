@@ -1,0 +1,29 @@
+# Settings to manage and configure a Firebase App Hosting backend.
+# https://firebase.google.com/docs/app-hosting/configure
+
+runConfig:
+  # cpu must be >= 1 or Cloud Run only allocates CPU while actively
+  # handling an HTTP request — this kills background yt-dlp downloads
+  # (progress stuck at 0%) since they run after the response is sent.
+  cpu: 1
+  memoryMiB: 1024
+
+  # minInstances: 1 keeps one container always warm so cookies.txt
+  # (written to local disk) survives between requests instead of
+  # getting wiped on every cold start — this is why cookies kept
+  # getting asked for again and again.
+  minInstances: 1
+
+  # Increase this value if you'd like to automatically spin up
+  # more instances in response to increased traffic.
+  maxInstances: 1
+
+env:
+  # Paste your YouTube cookies.txt content into a Secret Manager secret
+  # (Firebase console → App Hosting → your backend → Settings → Environment
+  # → Add secret → name it ytdlpCookies → paste cookies.txt content).
+  # This rewrites cookies.txt on every boot, so a restart never loses it.
+  - variable: YTDLP_COOKIES_CONTENT
+    secret: ytdlpCookies
+    availability:
+      - RUNTIME

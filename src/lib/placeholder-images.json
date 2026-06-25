@@ -1,0 +1,16 @@
+{
+  "placeholderImages": [
+    {
+      "id": "hero-abstract",
+      "description": "Abstract tech connectivity background",
+      "imageUrl": "https://picsum.photos/seed/clipgrab1/1200/800",
+      "imageHint": "tech abstract"
+    },
+    {
+      "id": "video-thumbnail-placeholder",
+      "description": "Video thumbnail placeholder",
+      "imageUrl": "https://picsum.photos/seed/clipgrab2/600/400",
+      "imageHint": "video player"
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+services:
+  # Web Service (API)
+  - type: web
+    name: clipgrab-api
+    runtime: docker
+    plan: free
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: NODE_ENV
+        value: production
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: clipgrab-redis
+          property: connectionString
+      - key: YTDLP_COOKIES_CONTENT
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+
+  # Background Worker
+  - type: worker
+    name: clipgrab-worker
+    runtime: docker
+    plan: free
+    dockerCommand: npx tsx backend/src/worker.ts
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: clipgrab-redis
+          property: connectionString
+      - key: YTDLP_COOKIES_CONTENT
+        sync: false
+      # Set this to the worker's public Render URL so it can construct correct
+      # download links pointing to itself (e.g. https://clipgrab-worker.onrender.com)
+      - key: WORKER_EXTERNAL_URL
+        sync: false
+
+# Redis instance
+keyvalues:
+  - name: clipgrab-redis
+    plan: free
