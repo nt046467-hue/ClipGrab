@@ -198,10 +198,50 @@ app.get('/api/status/:jobId', async (req, res) => {
 });
 
 // 4. Serve downloaded files
-app.get('/api/files/:filename', (req, res) => {
-  const filePath = path.join(process.cwd(), 'temp', req.params.filename);
+// In Redis/worker mode the file lives on the worker container's disk, not here.
+// We proxy it internally so the browser only ever talks to this API URL.
+// Set WORKER_BASE_URL on the API service to the worker's Render URL,
+// e.g. https://clipgrab-worker.onrender.com
+app.get('/api/files/:filename', async (req, res) => {
+  const filename = req.params.filename;
+  const inline = req.query.inline === 'true';
+
+  // --- Redis/worker mode: proxy from worker container ---
+  const workerBase = (process.env.WORKER_BASE_URL || '').replace(/\/$/, '');
+  if (isRedis && workerBase) {
+    const workerFileUrl = `${workerBase}/files/${encodeURIComponent(filename)}${inline ? '?inline=true' : ''}`;
+    try {
+      console.log(`[API] Proxying file from worker: ${workerFileUrl}`);
+      const upstream = await fetch(workerFileUrl);
+      if (!upstream.ok) {
+        console.error(`[API] Worker returned ${upstream.status} for file: ${filename}`);
+        return res.status(upstream.status).send('File expired or not found');
+      }
+      const contentType = filename.endsWith('.mp3') ? 'audio/mpeg' : 'video/mp4';
+      res.set('Content-Type', contentType);
+      res.set('Content-Disposition', inline ? 'inline' : `attachment; filename="${filename}"`);
+      if (upstream.headers.get('content-length')) {
+        res.set('Content-Length', upstream.headers.get('content-length')!);
+      }
+      // Stream the response body directly to the client
+      const reader = upstream.body as any;
+      if (reader && reader.pipe) {
+        reader.pipe(res);
+      } else {
+        const buffer = Buffer.from(await upstream.arrayBuffer());
+        res.send(buffer);
+      }
+      return;
+    } catch (err: any) {
+      console.error('[API] Failed to proxy file from worker:', err.message);
+      return res.status(502).send('Worker unavailable — file may still be processing');
+    }
+  }
+
+  // --- Local/in-memory mode: serve from this container's disk ---
+  const filePath = path.join(process.cwd(), 'temp', filename);
   if (fs.existsSync(filePath)) {
-    if (req.query.inline === 'true') {
+    if (inline) {
       res.sendFile(filePath);
     } else {
       res.download(filePath);

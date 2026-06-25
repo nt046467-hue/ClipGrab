@@ -88,17 +88,10 @@ const worker = new Worker('downloads', async (job: Job) => {
   const actualFilename = findActualOutputFile(TEMP_DIR, outputPath);
   console.log(`[Worker] Job ${job.id} completed: ${actualFilename}`);
 
-  // The worker runs in its own container — its files are NOT accessible via the
-  // API service URL. Return an absolute URL pointing to THIS worker's own HTTP
-  // server so the frontend downloads directly from the correct container.
-  // Set WORKER_EXTERNAL_URL in Render to the worker's public URL, e.g.:
-  //   https://clipgrab-worker.onrender.com
-  const workerBaseUrl = (process.env.WORKER_EXTERNAL_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/$/, '');
-  const fileUrl = workerBaseUrl
-    ? `${workerBaseUrl}/files/${encodeURIComponent(actualFilename)}`
-    : `/api/files/${encodeURIComponent(actualFilename)}`;
-
-  return { filename: actualFilename, downloadUrl: fileUrl };
+  // Return a simple relative path — the API service will proxy the file
+  // from this worker internally, so the browser never needs to hit the
+  // worker URL directly (which causes 502 errors on cold starts / Render).
+  return { filename: actualFilename, downloadUrl: `/api/files/${encodeURIComponent(actualFilename)}` };
 }, { connection });
 
 worker.on('completed', (job: any) => {

@@ -1,5 +1,5 @@
 services:
-  # Web Service (API)
+  # Web Service (API) — the only URL the frontend ever talks to
   - type: web
     name: clipgrab-api
     runtime: docker
@@ -20,14 +20,23 @@ services:
         sync: false
       - key: GROQ_API_KEY
         sync: false
+      # The API proxies completed download files from the worker container.
+      # Set this to the worker's Render URL after first deploy.
+      # e.g. https://clipgrab-worker.onrender.com
+      - key: WORKER_BASE_URL
+        sync: false
 
-  # Background Worker
-  - type: worker
+  # Background Worker — runs as 'web' so it gets a public URL that the
+  # API can reach server-to-server to proxy files. The browser NEVER
+  # hits this URL directly; all traffic goes through the API above.
+  - type: web
     name: clipgrab-worker
     runtime: docker
     plan: free
     dockerCommand: npx tsx backend/src/worker.ts
     envVars:
+      - key: PORT
+        value: 3001
       - key: NODE_ENV
         value: production
       - key: REDIS_URL
@@ -36,10 +45,6 @@ services:
           name: clipgrab-redis
           property: connectionString
       - key: YTDLP_COOKIES_CONTENT
-        sync: false
-      # Set this to the worker's public Render URL so it can construct correct
-      # download links pointing to itself (e.g. https://clipgrab-worker.onrender.com)
-      - key: WORKER_EXTERNAL_URL
         sync: false
 
 # Redis instance
