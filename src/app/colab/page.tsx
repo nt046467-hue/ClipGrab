@@ -493,22 +493,22 @@ export default function ColabGuidePage() {
         <Card className="bg-brand-surface/70 border border-brand-border backdrop-blur-xl rounded-2xl shadow-xl overflow-hidden">
           <CardContent className="p-6 sm:p-8 space-y-5">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 min-w-0">
                 <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 shrink-0">
                   <Server className="w-6 h-6" />
                 </div>
-                <div>
-                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-base font-bold text-white flex flex-wrap items-center gap-2">
                     Active Backend Status
                     <Badge
-                      className={`text-[10px] font-bold ${
+                      className={`text-[10px] font-bold shrink-0 ${
                         isColab ? "bg-amber-500/20 text-amber-300 border-amber-500/30" : "bg-primary/20 text-primary border-primary/30"
                       }`}
                     >
                       {isColab ? "⚡ Colab Active" : "☁️ Default Cloud"}
                     </Badge>
                   </h3>
-                  <p className="font-mono text-xs text-brand-text-muted truncate max-w-xs sm:max-w-md mt-0.5">
+                  <p className="font-mono text-xs text-brand-text-muted truncate max-w-full sm:max-w-md mt-0.5">
                     {activeUrl}
                   </p>
                 </div>
