@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Local build outputs and temp files
+.next/
+temp/
+out/
+build/
+dist/
+
+# Version control
+.git/
+.gitignore
+
+# Environment files and logs
+.env
+.env*.local
+*.log
+npm-debug.log*
+
+# Docker files
+Dockerfile
+Dockerfile.worker
+backend/Dockerfile
+docker-compose.yml
