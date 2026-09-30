@@ -72,6 +72,12 @@ export function useVideoPlayer({ source, onEnded, autoPlay = true }: UseVideoPla
   const lastTimeUpdateRef = useRef<number>(0);
   const saveHistoryIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
+  // ── Keep latest settings in a ref so the main event-listener effect can read
+  // them without adding `settings` to its dependency array (which caused a full
+  // effect teardown/reattach — and a spurious pause — whenever any setting changed).
+  const settingsRef = useRef(settings);
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
+
   // 1. Initial Format Support Check
   useEffect(() => {
     if (!source || !source.url) {
@@ -120,13 +126,15 @@ export function useVideoPlayer({ source, onEnded, autoPlay = true }: UseVideoPla
       }).catch(() => {});
     }
 
-    // Apply stored volume & playback settings
-    video.volume = settings.muted ? 0 : settings.volume;
-    video.muted = settings.muted;
-    video.playbackRate = settings.playbackRate;
-    video.loop = settings.loop;
+    // Apply stored volume & playback settings (read from ref — not a dep)
+    const s = settingsRef.current;
+    video.volume = s.muted ? 0 : s.volume;
+    video.muted = s.muted;
+    video.playbackRate = s.playbackRate;
+    video.loop = s.loop;
 
     const handleLoadedMetadata = () => {
+      clearStallTimer(); // got metadata — server is alive
       const dur = video.duration || source.duration || 0;
       setDuration(dur);
       setStatus('ready');
@@ -155,8 +163,35 @@ export function useVideoPlayer({ source, onEnded, autoPlay = true }: UseVideoPla
         setStatus('paused');
       }
     };
-    const handleWaiting = () => setStatus('buffering');
-    const handlePlaying = () => setStatus('playing');
+
+    // ── Stall / loading-forever detection ──
+    // If video is stuck in buffering/loading for >15s with no progress, show error.
+    // This handles dead Colab URLs, expired ngrok tunnels, unreachable servers.
+    let stallTimer: NodeJS.Timeout | null = null;
+    const STALL_TIMEOUT_MS = 15_000;
+
+    const clearStallTimer = () => {
+      if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
+    };
+
+    const startStallTimer = () => {
+      clearStallTimer();
+      stallTimer = setTimeout(() => {
+        if (!isCancelled && video && (video.readyState < 3) && !video.ended) {
+          setStatus('error');
+          const isHttp = source?.url?.startsWith('http');
+          setErrorMessage(
+            isHttp
+              ? 'Server is not responding or the file no longer exists. The Colab/backend session may have ended.'
+              : 'Video took too long to load. Check your connection.'
+          );
+        }
+      }, STALL_TIMEOUT_MS);
+    };
+
+    const handleWaiting = () => { setStatus('buffering'); startStallTimer(); };
+    const handleStalled = () => { setStatus('buffering'); startStallTimer(); };
+    const handlePlaying = () => { clearStallTimer(); setStatus('playing'); };
     const handleSeeking = () => setStatus('seeking');
     const handleSeeked = () => {
       if (video.paused) {
@@ -246,6 +281,7 @@ export function useVideoPlayer({ source, onEnded, autoPlay = true }: UseVideoPla
     video.addEventListener('play', handlePlay);
     video.addEventListener('pause', handlePause);
     video.addEventListener('waiting', handleWaiting);
+    video.addEventListener('stalled', handleStalled);
     video.addEventListener('playing', handlePlaying);
     video.addEventListener('seeking', handleSeeking);
     video.addEventListener('seeked', handleSeeked);
@@ -253,12 +289,19 @@ export function useVideoPlayer({ source, onEnded, autoPlay = true }: UseVideoPla
     video.addEventListener('ended', handleEnded);
     video.addEventListener('error', handleError);
 
+    // Start stall timer immediately for HTTP URLs (catches dead Colab sessions on load)
+    if (source?.url?.startsWith('http')) {
+      startStallTimer();
+    }
+
     return () => {
       isCancelled = true;
+      clearStallTimer();
       video.removeEventListener('loadedmetadata', handleLoadedMetadata);
       video.removeEventListener('play', handlePlay);
       video.removeEventListener('pause', handlePause);
       video.removeEventListener('waiting', handleWaiting);
+      video.removeEventListener('stalled', handleStalled);
       video.removeEventListener('playing', handlePlaying);
       video.removeEventListener('seeking', handleSeeking);
       video.removeEventListener('seeked', handleSeeked);
@@ -266,7 +309,11 @@ export function useVideoPlayer({ source, onEnded, autoPlay = true }: UseVideoPla
       video.removeEventListener('ended', handleEnded);
       video.removeEventListener('error', handleError);
     };
-  }, [source, autoPlay, onEnded, settings]);
+  // ⚠️  `settings` is intentionally excluded — use `settingsRef` instead to
+  // prevent the effect from re-running (and pausing playback) on every setting
+  // change. settingsRef is always kept in sync via the effect above.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source, autoPlay, onEnded]);
 
   // 3. Periodic Watch Position & History Saving
   useEffect(() => {

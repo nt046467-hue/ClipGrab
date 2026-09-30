@@ -21,6 +21,7 @@ import {
   QueueItem,
   getWatchHistory,
   WatchHistoryEntry,
+  removeFromHistory,
 } from '@/lib/player-storage';
 import { formatTime } from '@/lib/format-utils';
 import {
@@ -300,6 +301,21 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     onNext: onPlayNext,
   });
 
+  // ── Fix: browsers (Chrome/Firefox/Edge desktop) pause <video> when toggling fullscreen ──
+  // Track playing state before toggle and automatically resume playback across fullscreen transitions.
+  const wasPlayingAtFullscreenRef = useRef(false);
+
+  const handleToggleFullscreen = useCallback(async () => {
+    const isPlaying =
+      player.status === 'playing' ||
+      player.status === 'buffering' ||
+      (!!player.videoRef.current && !player.videoRef.current.paused && player.status !== 'ended');
+    if (isPlaying) {
+      wasPlayingAtFullscreenRef.current = true;
+    }
+    await fullscreen.toggleFullscreen();
+  }, [player.status, player.videoRef, fullscreen]);
+
   // Desktop keyboard hotkeys with input-field protection
   useKeyboardControls(
     {
@@ -309,7 +325,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       onVolumeUp: () => player.setVolume(Math.min(1, player.settings.volume + 0.05)),
       onVolumeDown: () => player.setVolume(Math.max(0, player.settings.volume - 0.05)),
       onToggleMute: player.toggleMute,
-      onToggleFullscreen: fullscreen.toggleFullscreen,
+      onToggleFullscreen: handleToggleFullscreen,
       onTogglePiP: pip.togglePiP,
       onToggleCaptions: () => {
         if (subtitleTracks.length > 0) {
@@ -368,6 +384,29 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   // Compute aspect ratio styles for windowed player shell
   const isLandscape = player.isVideoLandscape;
   const aspectRatioValue = player.aspectRatio || (isLandscape ? 16 / 9 : 9 / 16);
+
+  // Resume playback if video was active before entering or exiting fullscreen
+  useEffect(() => {
+    if (wasPlayingAtFullscreenRef.current) {
+      const vid = player.videoRef.current;
+      const attemptResume = () => {
+        if (vid && vid.paused && player.status !== 'error' && player.status !== 'ended') {
+          vid.play().catch(() => {});
+        }
+      };
+      const t1 = setTimeout(attemptResume, 60);
+      const t2 = setTimeout(attemptResume, 180);
+      const t3 = setTimeout(() => {
+        attemptResume();
+        wasPlayingAtFullscreenRef.current = false;
+      }, 350);
+      return () => {
+        clearTimeout(t1);
+        clearTimeout(t2);
+        clearTimeout(t3);
+      };
+    }
+  }, [fullscreen.isFullscreen, player.status, player.videoRef]);
 
   // Title expand state for long titles
   const [titleExpanded, setTitleExpanded] = useState(false);
@@ -511,8 +550,18 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             onTouchStart={gestures.handleTouchStart}
             onTouchMove={gestures.handleTouchMove}
             onTouchEnd={gestures.handleTouchEnd}
-            onClick={handleSingleClick}
-            onDoubleClick={handleDoubleClick}
+            onClick={(e) => {
+              // Only fire for REAL mouse clicks — never for touch-synthesized click events.
+              // Touch is handled exclusively by the gesture hook above.
+              // This prevents: tap controls area (which stops touch propagation) → synthetic
+              // click leaks through → handleSingleClick fires → video pauses unexpectedly.
+              if ((e.nativeEvent as PointerEvent).pointerType !== 'mouse') return;
+              handleSingleClick();
+            }}
+            onDoubleClick={(e) => {
+              if ((e.nativeEvent as PointerEvent).pointerType !== 'mouse') return;
+              handleDoubleClick(e);
+            }}
           >
             <video
               ref={player.videoRef}
@@ -606,73 +655,94 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               const isNetworkErr = errMsg.includes('Network') || errMsg.includes('network') || errMsg.includes('connection');
               const isOffline = !navigator.onLine;
               const isBlobUrl = source.url.startsWith('blob:');
+              const isColabTunnel = source.url.includes('trycloudflare.com');
               const isServerUrl = source.url.startsWith('http') && !isBlobUrl;
-              const showDownloadFallback = (isNetworkErr || isOffline) && isServerUrl;
+              const showDownloadFallback = (isNetworkErr || isOffline) && isServerUrl && !isColabTunnel;
 
               return (
                 <div className="absolute inset-0 z-30 flex flex-col items-center justify-center p-6 bg-black/90 backdrop-blur-md text-center">
                   <div className="max-w-md space-y-4">
-                    <div className={`w-14 h-14 mx-auto rounded-2xl ${isBlobUrl
-                        ? 'bg-primary/10 border border-primary/30 text-primary'
+                    <div className={`w-14 h-14 mx-auto rounded-2xl ${isBlobUrl || isColabTunnel
+                        ? 'bg-amber-500/10 border border-amber-500/30 text-amber-400'
                         : showDownloadFallback
                           ? 'bg-amber-500/10 border border-amber-500/30 text-amber-400'
                           : 'bg-red-500/10 border border-red-500/30 text-red-400'
                       } flex items-center justify-center`}>
-                      {isBlobUrl ? <FolderOpen className="w-7 h-7" /> : <AlertCircle className="w-7 h-7" />}
+                      {isBlobUrl || isColabTunnel ? <FolderOpen className="w-7 h-7" /> : <AlertCircle className="w-7 h-7" />}
                     </div>
 
                     <h3 className="font-headline font-bold text-lg text-white">
-                      {isBlobUrl
-                        ? 'Local Video Session Ended'
-                        : showDownloadFallback
-                          ? 'Server Offline or Network Issue'
-                          : 'Unable to play video'}
+                      {isColabTunnel
+                        ? 'Colab Session Expired'
+                        : isBlobUrl
+                          ? 'Local Video Session Ended'
+                          : showDownloadFallback
+                            ? 'Server Offline or Network Issue'
+                            : 'Unable to play video'}
                     </h3>
 
                     <p className="text-xs sm:text-sm text-white/60 leading-relaxed">
-                      {isBlobUrl
-                        ? 'The browser released the temporary file handle. You can re-select your video file to continue watching right where you left off.'
-                        : showDownloadFallback
-                          ? 'The backend server is not reachable right now. You can try again when online, or download the file directly to watch offline.'
-                          : (errMsg || "This video format or codec isn't supported by this browser.")}
+                      {isColabTunnel
+                        ? 'This streaming link expired because your temporary Colab notebook stopped. Since this video was already saved to your device, select the file from your Downloads folder to play it offline!'
+                        : isBlobUrl
+                          ? 'The browser released the temporary file handle. You can re-select your video file to continue watching right where you left off.'
+                          : showDownloadFallback
+                            ? 'The backend server is not reachable right now. You can try again when online, or download the file directly to watch offline.'
+                            : (errMsg || "This video format or codec isn't supported by this browser.")}
                     </p>
 
                     <div className="flex flex-wrap justify-center gap-3 pt-2">
-                      {isBlobUrl ? (
+                      {/* Hidden re-link file input for local files or expired Colab links */}
+                      <input
+                        type="file"
+                        id="cg-relink-file-input"
+                        accept="video/*,audio/*"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            const newId = generateVideoId(file.name, file.size.toString());
+                            const freshUrl = registerActiveMedia(newId, file, file.name);
+                            if (onSwitchVideo) {
+                              onSwitchVideo({
+                                ...source,
+                                id: newId,
+                                url: freshUrl,
+                                title: file.name.replace(/\.[^/.]+$/, ''),
+                              });
+                            } else {
+                              player.videoRef.current!.src = freshUrl;
+                              player.videoRef.current!.load();
+                              player.videoRef.current!.play().catch(() => { });
+                            }
+                          }
+                        }}
+                      />
+
+                      {isColabTunnel || isBlobUrl ? (
                         <>
-                          <input
-                            type="file"
-                            id="cg-relink-file-input"
-                            accept="video/*,audio/*"
-                            className="hidden"
-                            onChange={(e) => {
-                              const file = e.target.files?.[0];
-                              if (file) {
-                                const newId = generateVideoId(file.name, file.size.toString());
-                                const freshUrl = registerActiveMedia(newId, file, file.name);
-                                if (onSwitchVideo) {
-                                  onSwitchVideo({
-                                    ...source,
-                                    id: newId,
-                                    url: freshUrl,
-                                    title: file.name.replace(/\.[^/.]+$/, ''),
-                                  });
-                                } else {
-                                  player.videoRef.current!.src = freshUrl;
-                                  player.videoRef.current!.load();
-                                  player.videoRef.current!.play().catch(() => { });
-                                }
-                              }
-                            }}
-                          />
                           <button
                             type="button"
                             onClick={() => document.getElementById('cg-relink-file-input')?.click()}
-                            className="px-5 py-2.5 rounded-xl bg-primary hover:bg-primary/90 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-primary/25 transition-all cursor-pointer active:scale-95"
+                            className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-black font-bold text-xs flex items-center gap-2 shadow-lg shadow-amber-500/25 transition-all cursor-pointer active:scale-95"
                           >
                             <FolderOpen className="w-4 h-4" />
-                            <span>Select File Again</span>
+                            <span>Select from Downloads</span>
                           </button>
+
+                          {isColabTunnel && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                removeFromHistory(source.id);
+                                onClose();
+                              }}
+                              className="px-4 py-2.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-300 font-medium text-xs flex items-center gap-1.5 transition-all cursor-pointer border border-red-500/20 active:scale-95"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                              <span>Remove from Library</span>
+                            </button>
+                          )}
                         </>
                       ) : (
                         <button
@@ -748,7 +818,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 onSeekRelative={player.seekRelative}
                 onVolumeChange={player.setVolume}
                 onToggleMute={player.toggleMute}
-                onToggleFullscreen={fullscreen.toggleFullscreen}
+                onToggleFullscreen={handleToggleFullscreen}
                 onTogglePiP={pip.togglePiP}
                 onToggleCaptions={() => {
                   if (subtitleTracks.length > 0) {

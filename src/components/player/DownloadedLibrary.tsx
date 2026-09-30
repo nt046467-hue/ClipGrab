@@ -14,6 +14,8 @@ import {
   ListVideo,
   Download,
   ChevronUp,
+  Zap,
+  AlertTriangle,
 } from 'lucide-react';
 import {
   getWatchHistory,
@@ -31,6 +33,7 @@ import {
   removeMediaBlob,
 } from '@/lib/indexed-media-store';
 import { generateFileThumbnail } from '@/lib/media-utils';
+import { getStoredApiUrl } from '@/lib/api-config';
 
 interface DownloadedLibraryProps {
   isOpen: boolean;
@@ -45,6 +48,8 @@ export const DownloadedLibrary: React.FC<DownloadedLibraryProps> = ({
 }) => {
   const [history, setHistory] = useState<WatchHistoryEntry[]>([]);
   const [isClosing, setIsClosing] = useState(false);
+  // Inline warning for stale Colab entries (non-blocking, replaces native confirm())
+  const [staleWarning, setStaleWarning] = useState<string | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const scrollContentRef = useRef<HTMLDivElement | null>(null);
@@ -135,8 +140,9 @@ export const DownloadedLibrary: React.FC<DownloadedLibraryProps> = ({
 
   const handleResumeHistory = async (entry: WatchHistoryEntry) => {
     let playUrl = entry.fileUrl;
+    setStaleWarning(null);
 
-    // If it's a blob: URL, verify its validity and revive from IndexedDB if expired
+    // ── Blob URL: verify / revive from IndexedDB ──
     if (entry.fileUrl.startsWith('blob:')) {
       const safe = await getSafeMediaUrl(entry.id, entry.fileUrl);
       if (safe.isRevived) {
@@ -144,11 +150,66 @@ export const DownloadedLibrary: React.FC<DownloadedLibraryProps> = ({
       } else {
         const isAlive = await testBlobUrl(entry.fileUrl);
         if (!isAlive) {
-          // File was unmapped and not in IndexedDB — trigger file picker
-          alert(`The local video file "${entry.title}" is no longer accessible. Please re-select the file to play.`);
+          setStaleWarning(`"${entry.title}" is a local file that's no longer accessible. Open it again using the folder button above.`);
           fileInputRef.current?.click();
           return;
         }
+      }
+    }
+
+    // ── HTTP / Colab URL: try to rewrite with current API host if hostname differs ──
+    if (entry.fileUrl.startsWith('http')) {
+      const currentBase = getStoredApiUrl(); // e.g. https://new-colab.trycloudflare.com
+      try {
+        const storedUrl = new URL(entry.fileUrl);
+        const currentUrl = new URL(currentBase);
+
+        if (storedUrl.host !== currentUrl.host) {
+          // Hosts differ — try rewriting path to current server
+          const rewritten = `${currentBase}${storedUrl.pathname}${storedUrl.search}`;
+          try {
+            const check = await fetch(rewritten, {
+              method: 'HEAD',
+              signal: AbortSignal.timeout(3000),
+            });
+            if (check.ok) {
+              // Current server has this file! Use the new URL.
+              playUrl = rewritten;
+            } else {
+              throw new Error('Not found on new server');
+            }
+          } catch {
+            // Rewrite failed — also check if original is alive
+            try {
+              const ping = await fetch(entry.fileUrl, {
+                method: 'HEAD',
+                signal: AbortSignal.timeout(2000),
+              });
+              if (!ping.ok) throw new Error('Original also dead');
+              // Original URL still works, use it
+              playUrl = entry.fileUrl;
+            } catch {
+              // Both old and rewritten URL are dead
+              setStaleWarning(
+                `"${entry.title}" was streamed from a different Colab session that has ended. ` +
+                `If you downloaded the file, tap the folder button above to open it locally.`
+              );
+              return;
+            }
+          }
+        } else {
+          // Same host — quick reachability ping
+          try {
+            await fetch(entry.fileUrl, { method: 'HEAD', signal: AbortSignal.timeout(2000) });
+          } catch {
+            setStaleWarning(
+              `"${entry.title}" cannot be reached. The server may be offline or restarting.`
+            );
+            return;
+          }
+        }
+      } catch {
+        // URL parse failed — play as-is and let the player show error if needed
       }
     }
 
@@ -259,6 +320,26 @@ export const DownloadedLibrary: React.FC<DownloadedLibraryProps> = ({
             WebkitOverflowScrolling: 'touch',
           }}
         >
+          {/* Stale Colab / Offline Warning Alert Banner */}
+          {staleWarning && (
+            <div className="p-3.5 sm:p-4 rounded-2xl bg-amber-500/10 border border-amber-500/25 flex items-start gap-3 animate-in fade-in-50 duration-200">
+              <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-amber-200/90 leading-relaxed font-medium">
+                  {staleWarning}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setStaleWarning(null)}
+                aria-label="Dismiss warning"
+                className="p-1 rounded-lg text-amber-400/60 hover:text-amber-300 hover:bg-amber-500/10 transition-colors shrink-0 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
           {/* Continue Watching Section */}
           {inProgress.length > 0 && (
             <section className="space-y-3">
@@ -326,21 +407,49 @@ export const DownloadedLibrary: React.FC<DownloadedLibraryProps> = ({
 
           {/* All Watch History Section */}
           <section className="space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-2">
               <h3 className="font-bold text-xs sm:text-sm text-white flex items-center gap-2">
                 <ListVideo className="w-4 h-4 text-white/40" />
                 Watch History &amp; Saved Videos
               </h3>
-              {history.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => { clearWatchHistory(); loadHistory(); }}
-                  className="min-h-[44px] sm:min-h-0 text-[11px] text-red-400/80 hover:text-red-400 flex items-center gap-1.5 transition-colors cursor-pointer py-1.5 px-2.5 rounded-lg hover:bg-red-500/10 active:scale-95"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  Clear all
-                </button>
-              )}
+              <div className="flex items-center gap-2">
+                {history.some((h) => h.fileUrl.includes('trycloudflare.com')) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const colabItems = history.filter((h) => h.fileUrl.includes('trycloudflare.com'));
+                      if (
+                        confirm(
+                          `Remove ${colabItems.length} temporary Colab session link${
+                            colabItems.length > 1 ? 's' : ''
+                          }? (Your actual downloaded video files on your phone/PC will remain safe in Downloads)`
+                        )
+                      ) {
+                        colabItems.forEach((h) => {
+                          removeFromHistory(h.id);
+                          removeMediaBlob(h.id);
+                        });
+                        loadHistory();
+                      }
+                    }}
+                    className="min-h-[36px] text-[11px] text-amber-400 hover:text-amber-300 flex items-center gap-1 transition-colors cursor-pointer py-1 px-2.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 active:scale-95"
+                    title="Clean temporary Colab links"
+                  >
+                    <Zap className="w-3.5 h-3.5 fill-amber-400" />
+                    <span>Clean Colab ({history.filter((h) => h.fileUrl.includes('trycloudflare.com')).length})</span>
+                  </button>
+                )}
+                {history.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => { clearWatchHistory(); loadHistory(); }}
+                    className="min-h-[36px] text-[11px] text-red-400/80 hover:text-red-400 flex items-center gap-1.5 transition-colors cursor-pointer py-1 px-2.5 rounded-lg hover:bg-red-500/10 active:scale-95"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Clear all
+                  </button>
+                )}
+              </div>
             </div>
 
             {history.length === 0 ? (
@@ -438,6 +547,11 @@ export const DownloadedLibrary: React.FC<DownloadedLibraryProps> = ({
                         {item.fileSize && (
                           <span className="text-[9.5px] text-white/35 font-mono">
                             {item.fileSize}
+                          </span>
+                        )}
+                        {item.fileUrl.includes('trycloudflare.com') && (
+                          <span className="text-[9px] font-bold bg-amber-500/10 border border-amber-500/25 text-amber-300 px-1.5 py-0.5 rounded flex items-center gap-0.5">
+                            <Zap className="w-2.5 h-2.5 fill-amber-300" /> Colab
                           </span>
                         )}
                       </div>

@@ -130,13 +130,17 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
     );
   }
 
+  const handleContainerTap = (e: React.MouseEvent<HTMLDivElement> | React.TouchEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement | null;
+    if (target?.closest('button, input, a, [role="slider"], [role="button"], label')) {
+      return;
+    }
+    onDismiss?.();
+  };
+
   return (
     <div
-      onClick={(e) => {
-        if (e.target === e.currentTarget && onDismiss) {
-          onDismiss();
-        }
-      }}
+      onClick={handleContainerTap}
       onTouchStart={(e) => {
         // Prevent touch from bubbling down to video gesture recognizer
         e.stopPropagation();
@@ -145,9 +149,7 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
       onTouchEnd={(e) => {
         // Prevent touch from bubbling down to video gesture recognizer
         e.stopPropagation();
-        if (e.target === e.currentTarget && onDismiss) {
-          onDismiss();
-        }
+        handleContainerTap(e);
       }}
       className={`absolute inset-0 z-30 flex flex-col justify-between p-3 sm:p-5 transition-opacity duration-200 ${
         visible ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
