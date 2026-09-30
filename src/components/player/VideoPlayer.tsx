@@ -88,6 +88,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const hideTimerRef = useRef<NodeJS.Timeout | null>(null);
   // Track if user is scrubbing — freeze hide timer during scrub
   const isScrubbingRef = useRef(false);
+  // Always-current ref so gesture callbacks can read controlsVisible without stale closure
+  const controlsVisibleRef = useRef(true);
+  // Keep ref in sync with state
+  useEffect(() => { controlsVisibleRef.current = controlsVisible; }, [controlsVisible]);
 
   // Desktop single-click: track pending single-click to distinguish from double-click
   const singleClickTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -189,31 +193,36 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     currentTime: player.currentTime,
     onSeek: player.seek,
     onSeekRelative: player.seekRelative,
-    // ── Fires INSTANTLY on any tap — shows controls with zero delay (YouTube behavior) ──
-    // The 280ms window is still used to detect double-taps, but we don't wait for it
-    // to show the controls. onToggleControls fires 280ms later to handle the timer.
+    // ── Single tap instantly shows controls (YouTube behavior) ──
+    // onFirstTap fires immediately; onToggleControls fires 280ms later after
+    // the double-tap detection window expires.
     onFirstTap: () => {
       if (player.status === 'playing') {
-        // Show controls immediately; the 3s timer starts from this moment
-        setControlsVisible(true);
-        // Cancel any pending hide, then start fresh 3s countdown
-        if (hideTimerRef.current) {
-          clearTimeout(hideTimerRef.current);
-          hideTimerRef.current = null;
+        if (!controlsVisibleRef.current) {
+          // Controls are hidden → show them and start 3s hide timer
+          setControlsVisible(true);
+          if (hideTimerRef.current) { clearTimeout(hideTimerRef.current); hideTimerRef.current = null; }
+          if (!isScrubbingRef.current && !settingsOpen && !subtitlesOpen) {
+            hideTimerRef.current = setTimeout(() => setControlsVisible(false), 3000);
+          }
         }
-        if (!isScrubbingRef.current && !settingsOpen && !subtitlesOpen) {
-          hideTimerRef.current = setTimeout(() => setControlsVisible(false), 3000);
-        }
+        // Controls already visible → onToggleControls will hide them after 280ms
       }
-      // When paused: controls stay visible, no timer needed — onToggleControls handles it
+      // When paused: controls always stay visible
     },
     onToggleControls: () => {
-      // Called 280ms after tap (double-tap window expired)
-      // By now controls are already visible (from onFirstTap), just ensure timer is correct
+      // Called 280ms after tap (double-tap window expired — confirmed single tap)
       if (player.status === 'playing') {
-        resetHideTimer(3000);
+        if (controlsVisibleRef.current) {
+          // Controls are visible → HIDE them (toggle off)
+          if (hideTimerRef.current) { clearTimeout(hideTimerRef.current); hideTimerRef.current = null; }
+          setControlsVisible(false);
+        } else {
+          // Controls are hidden → START 3s timer (already shown by onFirstTap)
+          resetHideTimer(3000);
+        }
       }
-      // When paused: controls always stay visible, nothing to do
+      // When paused: controls stay visible, nothing to do
     },
     onTogglePlay: () => {
       player.togglePlay();
