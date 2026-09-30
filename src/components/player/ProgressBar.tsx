@@ -1,4 +1,4 @@
-﻿// ProgressBar.tsx
+// ProgressBar.tsx
 // High-precision YouTube-style seekbar with buffered indicator, smooth touch scrubbing, and timestamp bubble
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
@@ -10,6 +10,10 @@ interface ProgressBarProps {
   bufferedEnd: number;
   onSeek: (time: number) => void;
   disabled?: boolean;
+  /** Called when user starts dragging the scrubber (hold controls visible) */
+  onScrubStart?: () => void;
+  /** Called when user finishes dragging the scrubber (restart auto-hide timer) */
+  onScrubEnd?: () => void;
 }
 
 export const ProgressBar: React.FC<ProgressBarProps> = ({
@@ -18,6 +22,8 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
   bufferedEnd,
   onSeek,
   disabled = false,
+  onScrubStart,
+  onScrubEnd,
 }) => {
   const barRef = useRef<HTMLDivElement | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -47,6 +53,7 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
     setIsDragging(true);
     setDragProgress(progress);
     onSeek(progress * safeDuration);
+    onScrubStart?.();
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -62,9 +69,11 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
   // Touch handlers for mobile
   const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
     if (disabled || e.touches.length !== 1) return;
+    e.stopPropagation(); // prevent gesture recognizer from treating this as a player tap
     const progress = calculateProgressFromEvent(e.touches[0].clientX);
     setIsDragging(true);
     setDragProgress(progress);
+    onScrubStart?.();
   };
 
   const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
@@ -77,6 +86,7 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
     if (isDragging) {
       onSeek(dragProgress * safeDuration);
       setIsDragging(false);
+      onScrubEnd?.();
     }
   };
 
@@ -93,6 +103,7 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
       const progress = calculateProgressFromEvent(e.clientX);
       onSeek(progress * safeDuration);
       setIsDragging(false);
+      onScrubEnd?.();
     };
 
     window.addEventListener('mousemove', handleWindowMouseMove);

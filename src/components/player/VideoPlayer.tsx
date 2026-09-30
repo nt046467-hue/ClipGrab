@@ -85,6 +85,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   // Auto-hide controls state
   const [controlsVisible, setControlsVisible] = useState(true);
   const hideTimerRef = useRef<NodeJS.Timeout | null>(null);
+  // Track if user is scrubbing — freeze hide timer during scrub
+  const isScrubbingRef = useRef(false);
 
   // Desktop single-click: track pending single-click to distinguish from double-click
   const singleClickTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -127,57 +129,96 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   }, [source.id]);
 
-  // Reset auto-hide timer (YouTube mobile standard: 4.5s duration, never auto-hide while paused)
+  // ── Auto-hide logic (YouTube mobile: 3 seconds, never while paused or scrubbing) ──
   const resetHideTimer = useCallback((customDuration?: number) => {
     setControlsVisible(true);
     if (hideTimerRef.current) {
       clearTimeout(hideTimerRef.current);
       hideTimerRef.current = null;
     }
-    // Only auto-hide if actively playing and no modals/settings open
-    if (player.status === 'playing' && !settingsOpen && !subtitlesOpen) {
+    // Only auto-hide if actively playing AND user isn't scrubbing AND no modal open
+    if (player.status === 'playing' && !isScrubbingRef.current && !settingsOpen && !subtitlesOpen) {
       hideTimerRef.current = setTimeout(() => {
         setControlsVisible(false);
-      }, customDuration ?? 4500);
+      }, customDuration ?? 3000); // YouTube uses ~3s on mobile
     }
   }, [player.status, settingsOpen, subtitlesOpen]);
 
+  // Called by ProgressBar when user touches the seekbar
+  const handleScrubStart = useCallback(() => {
+    isScrubbingRef.current = true;
+    // Keep controls visible while scrubbing — cancel any pending hide
+    setControlsVisible(true);
+    if (hideTimerRef.current) {
+      clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+  }, []);
+
+  // Called by ProgressBar when user lifts finger off seekbar
+  const handleScrubEnd = useCallback(() => {
+    isScrubbingRef.current = false;
+    // Resume 3s timer after scrubbing ends (if still playing)
+    resetHideTimer(3000);
+  }, [resetHideTimer]);
+
   useEffect(() => {
-    if (player.status === 'paused') {
-      // YouTube behavior: when paused, controls stay visible permanently
+    if (player.status === 'paused' || player.status === 'ended') {
+      // YouTube behavior: when paused/ended, controls stay visible permanently
       setControlsVisible(true);
       if (hideTimerRef.current) {
         clearTimeout(hideTimerRef.current);
         hideTimerRef.current = null;
       }
     } else if (player.status === 'playing') {
-      resetHideTimer(4500);
+      // Only start auto-hide if not already scrubbing
+      if (!isScrubbingRef.current) {
+        resetHideTimer(3000);
+      }
     }
     return () => {
       if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
     };
   }, [player.status, resetHideTimer]);
 
-  // Gestures (double-tap seek left/right, horizontal swipe, single tap toggle) — mobile & touch
+  // Gestures (double-tap seek left/right, horizontal swipe, single tap) — mobile & touch
   const gestures = usePlayerGestures({
     seekAmount: player.settings.seekAmount,
     duration: player.duration,
     currentTime: player.currentTime,
     onSeek: player.seek,
     onSeekRelative: player.seekRelative,
-    onToggleControls: () => {
-      setControlsVisible((prev) => {
-        const next = !prev;
-        if (next) {
-          resetHideTimer(4500);
-        } else if (hideTimerRef.current) {
+    // ── Fires INSTANTLY on any tap — shows controls with zero delay (YouTube behavior) ──
+    // The 280ms window is still used to detect double-taps, but we don't wait for it
+    // to show the controls. onToggleControls fires 280ms later to handle the timer.
+    onFirstTap: () => {
+      if (player.status === 'playing') {
+        // Show controls immediately; the 3s timer starts from this moment
+        setControlsVisible(true);
+        // Cancel any pending hide, then start fresh 3s countdown
+        if (hideTimerRef.current) {
           clearTimeout(hideTimerRef.current);
           hideTimerRef.current = null;
         }
-        return next;
-      });
+        if (!isScrubbingRef.current && !settingsOpen && !subtitlesOpen) {
+          hideTimerRef.current = setTimeout(() => setControlsVisible(false), 3000);
+        }
+      }
+      // When paused: controls stay visible, no timer needed — onToggleControls handles it
     },
-    onTogglePlay: player.togglePlay,
+    onToggleControls: () => {
+      // Called 280ms after tap (double-tap window expired)
+      // By now controls are already visible (from onFirstTap), just ensure timer is correct
+      if (player.status === 'playing') {
+        resetHideTimer(3000);
+      }
+      // When paused: controls always stay visible, nothing to do
+    },
+    onTogglePlay: () => {
+      player.togglePlay();
+      // After tapping play/pause, show controls briefly then auto-hide in 3s
+      resetHideTimer(3000);
+    },
   });
 
   // Desktop double-click: left zone rewinds by seekAmount, right zone forwards by seekAmount, center toggles play/pause
@@ -236,8 +277,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           player.play();
         }
       }
-      // Also show controls briefly
-      resetHideTimer();
+      resetHideTimer(3000);
       singleClickTimerRef.current = null;
     }, 220);
   }, [gestures, player, resetHideTimer]);
@@ -723,9 +763,36 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 onMinimize={onMinimize}
                 onPrevious={onPlayPrevious}
                 onNext={onPlayNext}
-                onDismiss={() => setControlsVisible(false)}
-                onUserInteraction={() => resetHideTimer(4500)}
+                onDismiss={() => {
+                  // Tapping the empty area while playing = hide controls
+                  if (player.status === 'playing') setControlsVisible(false);
+                }}
+                onUserInteraction={() => resetHideTimer(3000)}
+                onScrubStart={handleScrubStart}
+                onScrubEnd={handleScrubEnd}
               />
+            )}
+
+            {/* ── Always-visible YouTube-style thin progress bar at bottom ──
+                Visible even when controls are hidden (just like YouTube's red bar) */}
+            {player.status !== 'error' && player.duration > 0 && (
+              <div
+                className={`absolute bottom-0 left-0 right-0 h-[3px] z-20 pointer-events-none transition-opacity duration-200 ${
+                  controlsVisible ? 'opacity-0' : 'opacity-100'
+                }`}
+                aria-hidden="true"
+              >
+                {/* Buffer */}
+                <div
+                  className="absolute top-0 left-0 h-full bg-white/25"
+                  style={{ width: `${Math.min(100, (player.bufferedEnd / player.duration) * 100)}%` }}
+                />
+                {/* Progress */}
+                <div
+                  className="absolute top-0 left-0 h-full bg-primary"
+                  style={{ width: `${Math.min(100, (player.currentTime / player.duration) * 100)}%` }}
+                />
+              </div>
             )}
           </div>
         </div>

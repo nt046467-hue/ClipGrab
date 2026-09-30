@@ -59,6 +59,10 @@ interface PlayerControlsProps {
   onNext?: () => void;
   onDismiss?: () => void;
   onUserInteraction?: () => void;
+  /** Called when user starts scrubbing the seekbar (to freeze auto-hide timer) */
+  onScrubStart?: () => void;
+  /** Called when user finishes scrubbing the seekbar (to resume auto-hide timer) */
+  onScrubEnd?: () => void;
 }
 
 export const PlayerControls: React.FC<PlayerControlsProps> = ({
@@ -95,6 +99,8 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
   onNext,
   onDismiss,
   onUserInteraction,
+  onScrubStart,
+  onScrubEnd,
 }) => {
   const [isLocked, setIsLocked] = useState(false);
 
@@ -143,9 +149,14 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
           onDismiss();
         }
       }}
-      className={`absolute inset-0 z-30 flex flex-col justify-between p-3 sm:p-5 bg-gradient-to-t from-black/90 via-black/25 to-black/80 transition-opacity duration-300 ${
+      className={`absolute inset-0 z-30 flex flex-col justify-between p-3 sm:p-5 transition-opacity duration-200 ${
         visible ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
       }`}
+      style={{
+        // YouTube-accurate gradient: heavy at bottom for scrubber readability,
+        // lighter at top for title, transparent in center so video shows through
+        background: 'linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.3) 18%, transparent 38%, transparent 62%, rgba(0,0,0,0.25) 82%, rgba(0,0,0,0.65) 100%)',
+      }}
     >
       {/* ── Top Bar ── */}
       <div className={`flex items-center justify-between gap-3 text-white ${visible ? 'pointer-events-auto' : 'pointer-events-none'} ${isFullscreen ? 'pt-safe' : 'pt-1 sm:pt-2'}`}>
@@ -317,6 +328,8 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
           duration={duration}
           bufferedEnd={bufferedEnd}
           onSeek={onSeek}
+          onScrubStart={onScrubStart}
+          onScrubEnd={onScrubEnd}
         />
 
         {/* Controls Row */}

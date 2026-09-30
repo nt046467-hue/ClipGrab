@@ -16,6 +16,8 @@ export interface UsePlayerGesturesProps {
   currentTime: number;
   onSeek: (targetTime: number) => void;
   onSeekRelative?: (seconds: number) => void;
+  /** Called immediately on every single-tap (before double-tap check) — for instant control reveal */
+  onFirstTap?: () => void;
   onToggleControls: () => void;
   onTogglePlay?: () => void;
 }
@@ -26,6 +28,7 @@ export function usePlayerGestures({
   currentTime,
   onSeek,
   onSeekRelative,
+  onFirstTap,
   onToggleControls,
   onTogglePlay,
 }: UsePlayerGesturesProps) {
@@ -204,7 +207,10 @@ export function usePlayerGestures({
       } else {
         lastTapRef.current = { time: now, x: touch.clientX, y: touch.clientY };
 
-        // Schedule single tap after double tap window expires
+        // ── Instantly show controls on first tap, don't wait 280ms (YouTube behavior) ──
+        onFirstTap?.();
+
+        // Schedule the full toggle/timer logic after the double-tap window expires
         tapTimeoutRef.current = setTimeout(() => {
           onToggleControls();
           tapTimeoutRef.current = null;
