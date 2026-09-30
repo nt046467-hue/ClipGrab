@@ -75,7 +75,7 @@ export function ChatAssistant({ hasStickyBar = false }: ChatAssistantProps) {
       }
 
       const data = await response.json().catch(() => ({}))
-      
+
       setMessages((prev) => [
         ...prev,
         {
@@ -120,9 +120,8 @@ export function ChatAssistant({ hasStickyBar = false }: ChatAssistantProps) {
       {/* Floating Toggle Button — sits above sticky CTA bar on mobile */}
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className={`fixed right-3.5 sm:right-6 z-50 flex items-center justify-center w-11 h-11 sm:w-14 sm:h-14 rounded-full bg-primary text-white border border-white/[0.08] shadow-[0_4px_24px_rgba(99,102,241,0.4)] hover:bg-primary/90 hover:shadow-[0_4px_28px_rgba(99,102,241,0.5)] hover:scale-105 active:scale-95 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background transition-all duration-300 ${
-          hasStickyBar ? 'bottom-20 sm:bottom-6' : 'bottom-4 sm:bottom-6'
-        }`}
+        className={`fixed right-3.5 sm:right-6 z-50 flex items-center justify-center w-11 h-11 sm:w-14 sm:h-14 rounded-full bg-primary text-white border border-white/[0.08] shadow-[0_4px_24px_rgba(99,102,241,0.4)] hover:bg-primary/90 hover:shadow-[0_4px_28px_rgba(99,102,241,0.5)] hover:scale-105 active:scale-95 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background transition-all duration-300 ${hasStickyBar ? 'bottom-20 sm:bottom-6' : 'bottom-4 sm:bottom-6'
+          }`}
         aria-label="Toggle chat assistant"
       >
         {isOpen ? <X className="w-4 h-4 sm:w-6 sm:h-6" /> : <Terminal className="w-4 h-4 sm:w-6 sm:h-6" />}
@@ -165,27 +164,24 @@ export function ChatAssistant({ hasStickyBar = false }: ChatAssistantProps) {
                 {messages.map((msg, i) => (
                   <div
                     key={i}
-                    className={`flex gap-2.5 max-w-[85%] ${
-                      msg.sender === "user" ? "ml-auto flex-row-reverse" : "mr-auto"
-                    }`}
+                    className={`flex gap-2.5 max-w-[85%] ${msg.sender === "user" ? "ml-auto flex-row-reverse" : "mr-auto"
+                      }`}
                   >
                     <div
-                      className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border ${
-                        msg.sender === "user"
+                      className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 border ${msg.sender === "user"
                           ? "bg-primary/15 border-primary/30 text-primary"
                           : "bg-white/[0.04] border-white/[0.08] text-brand-text-primary"
-                      }`}
+                        }`}
                     >
                       {msg.sender === "user" ? <User className="w-3.5 h-3.5" /> : <Bot className="w-3.5 h-3.5" />}
                     </div>
 
                     <div className="space-y-1">
                       <div
-                        className={`p-3 rounded-xl border text-[11px] leading-relaxed break-words whitespace-pre-wrap ${
-                          msg.sender === "user"
+                        className={`p-3 rounded-xl border text-[11px] leading-relaxed break-words whitespace-pre-wrap ${msg.sender === "user"
                             ? "bg-primary/10 border-primary/25 text-white rounded-tr-none"
                             : "bg-brand-surface border-brand-border text-brand-text-primary rounded-tl-none"
-                        }`}
+                          }`}
                       >
                         {msg.text}
                       </div>

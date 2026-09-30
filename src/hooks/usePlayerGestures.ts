@@ -43,8 +43,6 @@ export function usePlayerGestures({
 
   const touchStartRef = useRef<{ x: number; y: number; startTime: number; initialCurrentTime: number } | null>(null);
   const clearFeedbackTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const gestureDirectionRef = useRef<'none' | 'horizontal' | 'vertical'>('none');
-  const hasMovedRef = useRef<boolean>(false);
 
   // Multi-tap accumulation & debounce tracking
   const accumulatedSeekRef = useRef<number>(0);
@@ -85,8 +83,6 @@ export function usePlayerGestures({
         startTime: Date.now(),
         initialCurrentTime: currentTime,
       };
-      gestureDirectionRef.current = 'none';
-      hasMovedRef.current = false;
       setIsSwiping(false);
       setSwipeSeekTime(null);
     },
@@ -100,28 +96,13 @@ export function usePlayerGestures({
       const touch = e.touches[0];
       const deltaX = touch.clientX - touchStartRef.current.x;
       const deltaY = touch.clientY - touchStartRef.current.y;
-      const absX = Math.abs(deltaX);
-      const absY = Math.abs(deltaY);
 
-      if (absX > 10 || absY > 10) {
-        hasMovedRef.current = true;
+      // Only engage swipe seek if horizontal movement dominates and exceeds threshold
+      if (!isSwiping && Math.abs(deltaX) > 25 && Math.abs(deltaX) > Math.abs(deltaY) * 1.5) {
+        setIsSwiping(true);
       }
 
-      // Distinguish gesture direction past a reasonable threshold (Rule 8)
-      if (gestureDirectionRef.current === 'none') {
-        if (absX >= 16 || absY >= 16) {
-          if (absY >= absX) {
-            // User is scrolling vertically -> allow native vertical page scroll
-            gestureDirectionRef.current = 'vertical';
-          } else if (absX > absY * 1.5 && absX >= 20) {
-            // Horizontal gesture dominates -> engage player seek
-            gestureDirectionRef.current = 'horizontal';
-            setIsSwiping(true);
-          }
-        }
-      }
-
-      if (gestureDirectionRef.current === 'horizontal' && duration > 0) {
+      if (isSwiping && duration > 0) {
         // Map 300px drag to 60 seconds (or proportionate to duration)
         const seekDelta = (deltaX / 300) * Math.min(120, Math.max(30, duration * 0.1));
         const target = Math.min(
@@ -131,7 +112,7 @@ export function usePlayerGestures({
         setSwipeSeekTime(target);
       }
     },
-    [duration]
+    [isSwiping, duration]
   );
 
   const handleTouchEnd = useCallback(
@@ -144,16 +125,6 @@ export function usePlayerGestures({
         setIsSwiping(false);
         setSwipeSeekTime(null);
         touchStartRef.current = null;
-        gestureDirectionRef.current = 'none';
-        hasMovedRef.current = false;
-        return;
-      }
-
-      // If user moved to scroll vertically or dragged, do not fire tap / double-tap
-      if (hasMovedRef.current || gestureDirectionRef.current === 'vertical') {
-        touchStartRef.current = null;
-        gestureDirectionRef.current = 'none';
-        hasMovedRef.current = false;
         return;
       }
 
@@ -177,7 +148,7 @@ export function usePlayerGestures({
       const isConsecutiveSeek =
         now - lastDoubleTapTimeRef.current < 650 &&
         ((clickX < leftZone && lastDoubleTapTypeRef.current === 'rewind') ||
-         (clickX > rightZone && lastDoubleTapTypeRef.current === 'forward'));
+          (clickX > rightZone && lastDoubleTapTypeRef.current === 'forward'));
 
       if (isDoubleTap || isConsecutiveSeek) {
         // Cancel single tap controls toggle

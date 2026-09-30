@@ -21,10 +21,7 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
   onClose,
 }) => {
   return (
-    <div
-      className="fixed right-4 sm:right-6 z-40 max-w-[340px] w-[calc(100vw-2rem)] sm:w-80 bg-[#0d1017]/95 border border-white/15 rounded-2xl shadow-2xl backdrop-blur-xl overflow-hidden p-2.5 animate-in slide-in-from-bottom-5 duration-300"
-      style={{ bottom: 'max(1rem, calc(env(safe-area-inset-bottom, 0px) + 0.75rem))' }}
-    >
+    <div className="fixed bottom-4 right-4 sm:bottom-6 sm:right-6 z-40 max-w-[340px] w-[calc(100vw-2rem)] sm:w-80 bg-[#0d1017]/95 border border-white/15 rounded-2xl shadow-2xl backdrop-blur-xl overflow-hidden p-2.5 animate-in slide-in-from-bottom-5 duration-300">
       <div className="flex items-center gap-3">
         {/* Clickable thumbnail to reopen full player */}
         <div

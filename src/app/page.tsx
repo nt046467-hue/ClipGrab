@@ -154,9 +154,6 @@ export default function Home() {
     setActivePlayerSource(source)
     setIsMiniPlayer(false)
     setIsMiniPlaying(true)
-    if (typeof window !== 'undefined') {
-      window.scrollTo({ top: 0, behavior: 'instant' })
-    }
   }
 
   // Auto-connect if loaded with ?engine=... URL parameter (from mobile QR scan or shared link)
@@ -486,16 +483,14 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-background text-foreground relative overflow-x-clip selection:bg-primary selection:text-white">
+    <div className="min-h-screen flex flex-col bg-background text-foreground relative overflow-hidden selection:bg-primary selection:text-white">
       {/* Dynamic ambient background glow */}
       <div className="absolute top-[-15%] left-[-10%] w-[55%] h-[60%] rounded-full bg-primary/15 blur-[160px] pointer-events-none" />
       <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[60%] rounded-full bg-indigo-500/10 blur-[180px] pointer-events-none" />
 
-      {/* Downloader Page Content — hidden when active video is shown in the main document flow */}
-      <div className={activePlayerSource && !isMiniPlayer ? 'hidden' : 'contents'}>
-        <Navbar />
+      <Navbar />
 
-        <main className={`flex-grow pt-[calc(4.25rem+env(safe-area-inset-top,0px))] sm:pt-36 px-3.5 sm:px-6 relative z-10 transition-all duration-300 ${metadata && !downloadingJob ? 'pb-28 sm:pb-20' : 'pb-20'}`}>
+      <main className={`flex-grow pt-[calc(4.25rem+env(safe-area-inset-top,0px))] sm:pt-36 px-3.5 sm:px-6 relative z-10 transition-all duration-300 ${metadata && !downloadingJob ? 'pb-28 sm:pb-20' : 'pb-20'}`}>
         <div className="max-w-5xl mx-auto space-y-8 sm:space-y-12">
 
           {/* Hero Section */}
@@ -534,7 +529,7 @@ export default function Home() {
           {/* Main URL Input Container */}
           <div className="max-w-3xl mx-auto">
             <div className={`relative transition-transform duration-300 ${isSearchFocused ? 'scale-[1.015]' : 'scale-100'}`}>
-              
+
               {/* Background Radial Glows for Ambient Blue Lighting */}
               <div className={`absolute inset-0 bg-gradient-to-r from-blue-600/30 via-indigo-500/20 to-[#00e5ff]/30 blur-3xl rounded-[2.5rem] transition-opacity duration-500 pointer-events-none ${isSearchFocused ? 'opacity-100' : 'opacity-25'}`} />
 
@@ -551,7 +546,7 @@ export default function Home() {
               </div>
 
               {/* Main Solid Search Bar Container */}
-              <div 
+              <div
                 className={`relative bg-[#08070d] backdrop-blur-2xl rounded-[1.5rem] sm:rounded-[2.2rem] p-2.5 shadow-2xl transition-all duration-300 z-10 ${isSearchFocused ? 'border-transparent shadow-[0_12px_45px_rgba(0,0,0,0.95)]' : 'border border-white/5 shadow-[0_8px_40px_rgba(0,0,0,0.8)]'}`}
               >
                 <div className="flex flex-col sm:flex-row items-stretch gap-3">
@@ -657,7 +652,7 @@ export default function Home() {
                     <X className="w-4 h-4" />
                   </Button>
                 </div>
-                
+
                 <p className="text-xs sm:text-sm text-brand-text-muted leading-relaxed">
                   YouTube or Instagram may require verified browser cookies for private or rate-limited content. Export cookies in <strong className="text-white">Netscape format</strong> using the browser extension <code className="text-primary bg-primary/10 px-1 py-0.5 rounded">Get cookies.txt LOCALLY</code> and paste below:
                 </p>
@@ -820,7 +815,7 @@ export default function Home() {
                     {/* Media Preview Player / Thumbnail */}
                     <div className="relative w-full lg:w-[440px] bg-black shrink-0 flex items-center justify-center overflow-hidden border-b lg:border-b-0 lg:border-r border-brand-border group">
                       <div className="relative w-full aspect-video lg:h-full min-h-[260px] lg:min-h-[420px] overflow-hidden flex items-center justify-center bg-black">
-                        
+
                         {/* Interactive Playable Video Embed vs Thumbnail Poster */}
                         {isPlayingPreview ? (
                           <div className="relative w-full h-full min-h-[260px] lg:min-h-[420px] bg-black flex items-center justify-center z-20">
@@ -1137,13 +1132,12 @@ export default function Home() {
             <div className="animate-in zoom-in-[0.98] fade-in duration-500 max-w-xl mx-auto relative group">
               {/* Continuous Ambient Background Glow */}
               <div
-                className={`absolute inset-0 blur-3xl rounded-[2.5rem] opacity-80 pointer-events-none transition-all duration-700 ${
-                  downloadingJob.status === 'completed'
+                className={`absolute inset-0 blur-3xl rounded-[2.5rem] opacity-80 pointer-events-none transition-all duration-700 ${downloadingJob.status === 'completed'
                     ? 'bg-gradient-to-r from-emerald-500/25 via-teal-500/20 to-[#00e5ff]/25'
                     : downloadingJob.status === 'failed'
-                    ? 'bg-gradient-to-r from-red-500/25 via-rose-500/20 to-amber-500/25'
-                    : 'bg-gradient-to-r from-[#e019ff]/25 via-[#8a2be2]/20 to-[#00e5ff]/25'
-                }`}
+                      ? 'bg-gradient-to-r from-red-500/25 via-rose-500/20 to-amber-500/25'
+                      : 'bg-gradient-to-r from-[#e019ff]/25 via-[#8a2be2]/20 to-[#00e5ff]/25'
+                  }`}
               />
 
               {/* Continuous Animated Glowing Meteor Tracing Border */}
@@ -1155,8 +1149,8 @@ export default function Home() {
                       downloadingJob.status === 'completed'
                         ? 'conic-gradient(from 0deg, transparent 45%, rgba(16, 185, 129, 0.15) 65%, rgba(52, 211, 153, 0.9) 88%, #00e5ff 100%)'
                         : downloadingJob.status === 'failed'
-                        ? 'conic-gradient(from 0deg, transparent 45%, rgba(239, 68, 68, 0.15) 65%, rgba(244, 63, 94, 0.9) 88%, #ff5252 100%)'
-                        : 'conic-gradient(from 0deg, transparent 45%, rgba(30, 58, 138, 0.2) 65%, rgba(59, 130, 246, 0.85) 88%, #00e5ff 100%)',
+                          ? 'conic-gradient(from 0deg, transparent 45%, rgba(239, 68, 68, 0.15) 65%, rgba(244, 63, 94, 0.9) 88%, #ff5252 100%)'
+                          : 'conic-gradient(from 0deg, transparent 45%, rgba(30, 58, 138, 0.2) 65%, rgba(59, 130, 246, 0.85) 88%, #00e5ff 100%)',
                   }}
                 />
               </div>
@@ -1189,11 +1183,11 @@ export default function Home() {
                         downloadingJob.progress >= 96
                           ? 'Validating Stream Integrity with FFprobe...'
                           : downloadingJob.progress >= 92
-                          ? 'Multiplexing & Packaging Media Container...'
-                          : 'Downloading Stream Packets...'
+                            ? 'Multiplexing & Packaging Media Container...'
+                            : 'Downloading Stream Packets...'
                       )}
                     </h4>
-                    
+
                     <p className="text-brand-text-muted text-xs sm:text-sm max-w-md mx-auto">
                       {downloadingJob.status === 'completed' && (
                         downloadingJob.result?.size
@@ -1206,8 +1200,8 @@ export default function Home() {
                         downloadingJob.progress >= 96
                           ? 'Running FFprobe stream inspection and filesystem byte validation...'
                           : downloadingJob.progress >= 92
-                          ? 'FFmpeg assembling audio & video streams into high-quality MP4...'
-                          : 'Fetching media packets with parallel acceleration...'
+                            ? 'FFmpeg assembling audio & video streams into high-quality MP4...'
+                            : 'Fetching media packets with parallel acceleration...'
                       )}
                     </p>
                   </div>
@@ -1348,10 +1342,6 @@ export default function Home() {
         </div>
       )}
 
-        <Footer />
-        {!activePlayerSource && !libraryOpen && <ChatAssistant hasStickyBar={!!metadata && !downloadingJob} />}
-      </div>
-
       {/* Backend / Colab Settings Modal */}
       <ServerSettingsModal
         open={settingsOpen}
@@ -1412,6 +1402,9 @@ export default function Home() {
         }}
         onPlayVideo={handleOpenPlayer}
       />
+
+      <Footer />
+      {!activePlayerSource && !libraryOpen && <ChatAssistant hasStickyBar={!!metadata && !downloadingJob} />}
     </div>
   )
 }

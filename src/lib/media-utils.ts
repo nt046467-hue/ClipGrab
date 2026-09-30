@@ -155,3 +155,66 @@ export async function captureVideoThumbnail(videoElement: HTMLVideoElement, cach
     return null;
   }
 }
+
+/**
+ * Automatically extracts a clean, high-resolution thumbnail from a local video File
+ */
+export async function generateFileThumbnail(file: File): Promise<string> {
+  if (typeof window === 'undefined' || !file.type.startsWith('video/')) {
+    return '';
+  }
+
+  return new Promise((resolve) => {
+    try {
+      const video = document.createElement('video');
+      video.preload = 'metadata';
+      video.muted = true;
+      video.playsInline = true;
+      const url = URL.createObjectURL(file);
+      video.src = url;
+
+      let resolved = false;
+      const finish = (result: string) => {
+        if (resolved) return;
+        resolved = true;
+        video.removeAttribute('src');
+        video.load();
+        URL.revokeObjectURL(url);
+        resolve(result);
+      };
+
+      video.onloadeddata = () => {
+        video.currentTime = Math.min(1.0, video.duration ? video.duration / 2 : 0.5);
+      };
+
+      video.onseeked = () => {
+        try {
+          if (video.videoWidth > 0 && video.videoHeight > 0) {
+            const canvas = document.createElement('canvas');
+            const targetWidth = Math.min(480, video.videoWidth);
+            const targetHeight = Math.round((targetWidth / video.videoWidth) * video.videoHeight);
+            canvas.width = targetWidth;
+            canvas.height = targetHeight;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+              const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+              finish(dataUrl);
+              return;
+            }
+          }
+        } catch {
+          // Canvas capture failed
+        }
+        finish('');
+      };
+
+      video.onerror = () => finish('');
+
+      // Fallback safety timeout
+      setTimeout(() => finish(''), 3000);
+    } catch {
+      resolve('');
+    }
+  });
+}

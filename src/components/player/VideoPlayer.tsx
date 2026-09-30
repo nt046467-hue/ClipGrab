@@ -40,11 +40,7 @@ import {
   User,
   X,
   FolderOpen,
-  ChevronUp,
-  Pause,
-  Maximize2,
 } from 'lucide-react';
-import { MiniPlayer } from './MiniPlayer';
 import { registerActiveMedia } from '@/lib/indexed-media-store';
 import { generateVideoId } from '@/lib/player-storage';
 import { PlatformIcon } from '@/components/PlatformIcon';
@@ -131,21 +127,32 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   }, [source.id]);
 
-  // Reset auto-hide timer
-  const resetHideTimer = useCallback(() => {
+  // Reset auto-hide timer (YouTube mobile standard: 4.5s duration, never auto-hide while paused)
+  const resetHideTimer = useCallback((customDuration?: number) => {
     setControlsVisible(true);
     if (hideTimerRef.current) {
       clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
     }
+    // Only auto-hide if actively playing and no modals/settings open
     if (player.status === 'playing' && !settingsOpen && !subtitlesOpen) {
       hideTimerRef.current = setTimeout(() => {
         setControlsVisible(false);
-      }, 3500);
+      }, customDuration ?? 4500);
     }
   }, [player.status, settingsOpen, subtitlesOpen]);
 
   useEffect(() => {
-    resetHideTimer();
+    if (player.status === 'paused') {
+      // YouTube behavior: when paused, controls stay visible permanently
+      setControlsVisible(true);
+      if (hideTimerRef.current) {
+        clearTimeout(hideTimerRef.current);
+        hideTimerRef.current = null;
+      }
+    } else if (player.status === 'playing') {
+      resetHideTimer(4500);
+    }
     return () => {
       if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
     };
@@ -160,8 +167,14 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     onSeekRelative: player.seekRelative,
     onToggleControls: () => {
       setControlsVisible((prev) => {
-        if (!prev) resetHideTimer();
-        return !prev;
+        const next = !prev;
+        if (next) {
+          resetHideTimer(4500);
+        } else if (hideTimerRef.current) {
+          clearTimeout(hideTimerRef.current);
+          hideTimerRef.current = null;
+        }
+        return next;
       });
     },
     onTogglePlay: player.togglePlay,
@@ -319,28 +332,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   // Title expand state for long titles
   const [titleExpanded, setTitleExpanded] = useState(false);
 
-  // Floating mini-player when user scrolls below the video player (Sections 18 & 19)
-  const [isScrolledPast, setIsScrolledPast] = useState(false);
-  const [dismissedScrollMini, setDismissedScrollMini] = useState(false);
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || !containerRef.current) return;
-    const elem = containerRef.current;
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        // When the bottom of the video player has scrolled off the top of the viewport
-        const isPast = !entry.isIntersecting && entry.boundingClientRect.bottom < 80;
-        setIsScrolledPast(isPast);
-        if (entry.isIntersecting) {
-          setDismissedScrollMini(false);
-        }
-      },
-      { threshold: 0.1 }
-    );
-    observer.observe(elem);
-    return () => observer.disconnect();
-  }, []);
-
   // Notify parent of play status changes (used by MiniPlayer)
   useEffect(() => {
     if (onMiniStatusChange) {
@@ -362,12 +353,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       className={
         fullscreen.isFullscreen
           ? "fixed inset-0 z-50 bg-black overflow-hidden select-none w-screen h-[100dvh]"
-          : "w-full min-h-screen bg-[#07080d] text-foreground flex flex-col relative select-text"
+          : "fixed inset-0 z-50 bg-[#07080d] overflow-y-auto overscroll-contain select-none flex flex-col"
       }
       style={{
         paddingTop: fullscreen.isFullscreen ? undefined : 'max(0.5rem, env(safe-area-inset-top, 0px))',
         paddingBottom: fullscreen.isFullscreen ? undefined : 'max(2.5rem, calc(env(safe-area-inset-bottom, 0px) + 1.5rem))',
-        touchAction: fullscreen.isFullscreen ? 'none' : 'auto',
+        touchAction: fullscreen.isFullscreen ? 'none' : 'pan-y',
         // Hide full player UI when minimised but keep all elements mounted (preserves video currentTime)
         display: isMiniMode ? 'none' : undefined,
       }}
@@ -433,13 +424,21 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
       {/* ── Main Content Area ── */}
       <main className={fullscreen.isFullscreen ? "w-full h-full" : "w-full max-w-6xl mx-auto px-2 sm:px-6 space-y-5 sm:space-y-6 flex-1"}>
-        
+
         {/* ── THE PLAYER CONTAINER (.player-shell) ── */}
         <div
           ref={containerRef}
-          onMouseMove={resetHideTimer}
+          onMouseMove={() => resetHideTimer()}
           onMouseLeave={() => {
             if (player.status === 'playing') setControlsVisible(false);
+          }}
+          onWheel={(e) => {
+            // Scroll up/down on player (windowed) = volume up/down
+            if (fullscreen.isFullscreen) return;
+            e.preventDefault();
+            const delta = e.deltaY < 0 ? 0.05 : -0.05;
+            const newVol = Math.min(1, Math.max(0, player.settings.volume + delta));
+            player.setVolume(newVol);
           }}
           className={
             fullscreen.isFullscreen
@@ -450,20 +449,20 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             aspectRatio: fullscreen.isFullscreen
               ? 'auto'
               : isLandscape
-              ? `${aspectRatioValue}`
-              : `${aspectRatioValue}`,
+                ? `${aspectRatioValue}`
+                : `${aspectRatioValue}`,
             maxHeight: fullscreen.isFullscreen
               ? 'none'
               : isLandscape
-              ? 'min(72vh, 640px)'
-              : 'min(75vh, 680px)',
+                ? 'min(72vh, 640px)'
+                : 'min(75vh, 680px)',
             maxWidth: fullscreen.isFullscreen
               ? 'none'
               : !isLandscape
-              ? 'min(100%, 420px)'
-              : '100%',
-            // Allow native vertical scroll gestures in windowed mode, isolate in fullscreen
-            touchAction: fullscreen.isFullscreen ? 'none' : 'pan-y',
+                ? 'min(100%, 420px)'
+                : '100%',
+            // Isolate touch events to prevent scroll bleed
+            touchAction: fullscreen.isFullscreen ? 'none' : 'none',
           }}
         >
           {/* Main Video Layer — handles touch gestures (mobile) and mouse clicks (desktop) */}
@@ -478,11 +477,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             <video
               ref={player.videoRef}
               src={source.url}
-              poster={source.thumbnail}
+              poster={source.thumbnail || undefined}
               playsInline
-              className={`w-full h-full transition-all duration-300 ${
-                player.settings.fitMode === 'cover' ? 'object-cover' : 'object-contain'
-              }`}
+              className={`w-full h-full transition-all duration-300 ${player.settings.fitMode === 'cover' ? 'object-cover' : 'object-contain'
+                }`}
             >
               {subtitleTracks.map((track) => (
                 <track
@@ -574,13 +572,12 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               return (
                 <div className="absolute inset-0 z-30 flex flex-col items-center justify-center p-6 bg-black/90 backdrop-blur-md text-center">
                   <div className="max-w-md space-y-4">
-                    <div className={`w-14 h-14 mx-auto rounded-2xl ${
-                      isBlobUrl
+                    <div className={`w-14 h-14 mx-auto rounded-2xl ${isBlobUrl
                         ? 'bg-primary/10 border border-primary/30 text-primary'
                         : showDownloadFallback
-                        ? 'bg-amber-500/10 border border-amber-500/30 text-amber-400'
-                        : 'bg-red-500/10 border border-red-500/30 text-red-400'
-                    } flex items-center justify-center`}>
+                          ? 'bg-amber-500/10 border border-amber-500/30 text-amber-400'
+                          : 'bg-red-500/10 border border-red-500/30 text-red-400'
+                      } flex items-center justify-center`}>
                       {isBlobUrl ? <FolderOpen className="w-7 h-7" /> : <AlertCircle className="w-7 h-7" />}
                     </div>
 
@@ -588,16 +585,16 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                       {isBlobUrl
                         ? 'Local Video Session Ended'
                         : showDownloadFallback
-                        ? 'Server Offline or Network Issue'
-                        : 'Unable to play video'}
+                          ? 'Server Offline or Network Issue'
+                          : 'Unable to play video'}
                     </h3>
 
                     <p className="text-xs sm:text-sm text-white/60 leading-relaxed">
                       {isBlobUrl
                         ? 'The browser released the temporary file handle. You can re-select your video file to continue watching right where you left off.'
                         : showDownloadFallback
-                        ? 'The backend server is not reachable right now. You can try again when online, or download the file directly to watch offline.'
-                        : (errMsg || "This video format or codec isn't supported by this browser.")}
+                          ? 'The backend server is not reachable right now. You can try again when online, or download the file directly to watch offline.'
+                          : (errMsg || "This video format or codec isn't supported by this browser.")}
                     </p>
 
                     <div className="flex flex-wrap justify-center gap-3 pt-2">
@@ -623,7 +620,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                                 } else {
                                   player.videoRef.current!.src = freshUrl;
                                   player.videoRef.current!.load();
-                                  player.videoRef.current!.play().catch(() => {});
+                                  player.videoRef.current!.play().catch(() => { });
                                 }
                               }
                             }}
@@ -726,6 +723,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 onMinimize={onMinimize}
                 onPrevious={onPlayPrevious}
                 onNext={onPlayNext}
+                onDismiss={() => setControlsVisible(false)}
+                onUserInteraction={() => resetHideTimer(4500)}
               />
             )}
           </div>
@@ -739,27 +738,17 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
           >
             {/* Title & Channel */}
             <div className="p-4 sm:p-6 rounded-2xl bg-white/[0.02] border border-white/[0.06] backdrop-blur-sm space-y-3 sm:space-y-4">
-              <div className="space-y-1.5 min-w-0">
-                {/* Title with safe wrapping and expandable more/less toggle for mobile (Section 11) */}
-                <div className="flex flex-col gap-1">
-                  <h1
-                    className={`font-headline font-bold text-base sm:text-xl lg:text-2xl text-white leading-snug break-words transition-all ${
-                      titleExpanded ? '' : 'line-clamp-2 sm:line-clamp-3'
-                    }`}
-                    title={source.title}
-                  >
-                    {source.title}
-                  </h1>
-                  {source.title && source.title.length > 55 && (
-                    <button
-                      type="button"
-                      onClick={() => setTitleExpanded(!titleExpanded)}
-                      className="self-start text-xs text-primary hover:underline font-semibold cursor-pointer active:scale-95"
-                    >
-                      {titleExpanded ? 'Show less' : 'Show more'}
-                    </button>
-                  )}
-                </div>
+              <div className="space-y-1.5">
+                {/* Clicking the title scrolls back to it (useful on long info pages) */}
+                <h1
+                  className="font-headline font-bold text-base sm:text-xl lg:text-2xl text-white leading-snug line-clamp-2 break-words cursor-pointer hover:text-primary transition-colors"
+                  title={source.title}
+                  onClick={() => {
+                    infoSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }}
+                >
+                  {source.title}
+                </h1>
 
                 <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs text-white/50">
                   {source.author && (
@@ -816,11 +805,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                   <button
                     type="button"
                     onClick={pip.togglePiP}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition-all active:scale-95 cursor-pointer ${
-                      pip.isPiP
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition-all active:scale-95 cursor-pointer ${pip.isPiP
                         ? 'bg-primary/20 border-primary/40 text-primary'
                         : 'bg-white/[0.04] hover:bg-white/[0.08] text-white/80 hover:text-white border-white/5'
-                    }`}
+                      }`}
                   >
                     <PictureInPicture className="w-3.5 h-3.5" />
                     <span>{pip.isPiP ? 'Exit PiP' : 'Picture-in-Picture (P)'}</span>
@@ -872,6 +860,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                             src={item.thumbnail}
                             alt=""
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                            onError={(e) => {
+                              e.currentTarget.style.display = 'none';
+                            }}
                           />
                         ) : (
                           <div className="w-full h-full flex items-center justify-center bg-white/[0.04]">
@@ -908,20 +899,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 </div>
               </div>
             )}
-
-            {/* ── BACK TO PLAYER PROGRAMMATIC SMOOTH SCROLL (Section 17) ── */}
-            <div className="flex justify-center pt-2 pb-6">
-              <button
-                type="button"
-                onClick={() => {
-                  window.scrollTo({ top: 0, behavior: 'smooth' });
-                }}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-white/70 hover:text-white border border-white/5 text-xs font-semibold active:scale-95 transition-all cursor-pointer"
-              >
-                <ChevronUp className="w-4 h-4 text-primary" />
-                <span>Back to Player</span>
-              </button>
-            </div>
           </section>
         )}
       </main>
@@ -953,19 +930,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         subtitleSize={subtitleSize}
         onChangeSize={setSubtitleSize}
       />
-
-      {/* ── FLOATING MINI PLAYER WHEN SCROLLED PAST (WINDOWED MODE) (Sections 18 & 19) ── */}
-      {isScrolledPast && !dismissedScrollMini && !fullscreen.isFullscreen && !isMiniMode && (
-        <MiniPlayer
-          source={source}
-          isPlaying={player.status === 'playing'}
-          onTogglePlay={player.togglePlay}
-          onExpand={() => {
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-          }}
-          onClose={() => setDismissedScrollMini(true)}
-        />
-      )}
     </div>
   );
 };

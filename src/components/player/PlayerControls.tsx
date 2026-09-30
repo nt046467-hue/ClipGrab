@@ -57,6 +57,8 @@ interface PlayerControlsProps {
   onMinimize?: () => void;
   onPrevious?: () => void;
   onNext?: () => void;
+  onDismiss?: () => void;
+  onUserInteraction?: () => void;
 }
 
 export const PlayerControls: React.FC<PlayerControlsProps> = ({
@@ -91,6 +93,8 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
   onMinimize,
   onPrevious,
   onNext,
+  onDismiss,
+  onUserInteraction,
 }) => {
   const [isLocked, setIsLocked] = useState(false);
 
@@ -122,8 +126,25 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
 
   return (
     <div
-      className={`absolute inset-0 z-30 flex flex-col justify-between p-3 sm:p-5 bg-gradient-to-t from-black/90 via-black/25 to-black/80 transition-opacity duration-300 pointer-events-none ${
-        visible ? 'opacity-100' : 'opacity-0'
+      onClick={(e) => {
+        if (e.target === e.currentTarget && onDismiss) {
+          onDismiss();
+        }
+      }}
+      onTouchStart={(e) => {
+        // Prevent touch from bubbling down to video gesture recognizer
+        e.stopPropagation();
+        onUserInteraction?.();
+      }}
+      onTouchEnd={(e) => {
+        // Prevent touch from bubbling down to video gesture recognizer
+        e.stopPropagation();
+        if (e.target === e.currentTarget && onDismiss) {
+          onDismiss();
+        }
+      }}
+      className={`absolute inset-0 z-30 flex flex-col justify-between p-3 sm:p-5 bg-gradient-to-t from-black/90 via-black/25 to-black/80 transition-opacity duration-300 ${
+        visible ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
       }`}
     >
       {/* ── Top Bar ── */}

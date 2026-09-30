@@ -6,7 +6,7 @@ import { useState, useEffect } from "react"
 import { getStoredApiUrl, isCustomApiUrlActive } from "@/lib/api-config"
 import { ServerSettingsModal } from "@/components/ServerSettingsModal"
 import { QrCodeShareModal } from "@/components/QrCodeShareModal"
-import { Button } from "@/components/ui/button"
+import { getWatchHistory } from "@/lib/player-storage"
 
 export function Navbar() {
   const [engineStatus, setEngineStatus] = useState<'online' | 'degraded' | 'down'>('online')
@@ -16,6 +16,32 @@ export function Navbar() {
   const [qrOpen, setQrOpen] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [latencyMs, setLatencyMs] = useState<number | null>(null)
+  const [libraryOpen, setLibraryOpen] = useState(false)
+  const [savedCount, setSavedCount] = useState(0)
+
+  // Track library open/close state (for Library button active tint)
+  useEffect(() => {
+    const handleOpen = () => setLibraryOpen(true)
+    const handleClose = () => setLibraryOpen(false)
+    window.addEventListener('clipgrab_open_library', handleOpen)
+    window.addEventListener('clipgrab_library_closed', handleClose)
+    return () => {
+      window.removeEventListener('clipgrab_open_library', handleOpen)
+      window.removeEventListener('clipgrab_library_closed', handleClose)
+    }
+  }, [])
+
+  // Keep saved video count fresh
+  useEffect(() => {
+    const refresh = () => setSavedCount(getWatchHistory().length)
+    refresh()
+    window.addEventListener('clipgrab_history_updated', refresh)
+    window.addEventListener('clipgrab_open_library', refresh)
+    return () => {
+      window.removeEventListener('clipgrab_history_updated', refresh)
+      window.removeEventListener('clipgrab_open_library', refresh)
+    }
+  }, [])
 
   // Safety: Ensure pointer-events on body are always cleaned up when modals close
   useEffect(() => {
@@ -62,7 +88,7 @@ export function Navbar() {
     let timer: NodeJS.Timeout
     const checkHealth = async () => {
       const activeUrl = getStoredApiUrl()
-      
+
       const startTime = Date.now()
       try {
         const response = await fetch(`${activeUrl}/api/health`, {
@@ -70,7 +96,7 @@ export function Navbar() {
           signal: AbortSignal.timeout(15000),
         })
         if (!response.ok) throw new Error('Unhealthy')
-        
+
         const latency = Date.now() - startTime
         setLatencyMs(latency)
         if (latency >= 2500) {
@@ -96,57 +122,80 @@ export function Navbar() {
     }
   }
 
+  // Status dot helpers
+  const statusColor =
+    engineStatus === 'online' ? 'bg-emerald-500' :
+    engineStatus === 'degraded' ? 'bg-amber-500' :
+    'bg-red-500'
+  const statusLabel =
+    engineStatus === 'online' ? 'Server online' :
+    engineStatus === 'degraded' ? 'Server slow' :
+    'Server offline'
+
   return (
     <>
-      <nav 
-        className="fixed top-0 left-0 right-0 z-40 bg-[#07080d]/85 backdrop-blur-2xl border-b border-white/[0.07] transition-all duration-300"
+      <nav
+        className="fixed top-0 left-0 right-0 z-40 border-b border-white/[0.06]"
         style={{
+          background: 'rgba(7,8,13,0.92)',
           paddingTop: 'env(safe-area-inset-top, 0px)',
           paddingLeft: 'max(0.75rem, env(safe-area-inset-left, 0px))',
           paddingRight: 'max(0.75rem, env(safe-area-inset-right, 0px))',
         }}
       >
-        <div className="max-w-7xl mx-auto h-14 sm:h-20 flex items-center justify-between gap-2">
-          
-          {/* Logo */}
-          <Link href="/" className="flex items-center gap-2 sm:gap-3 group shrink-0 min-w-0">
-            <div className="relative flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-xl sm:rounded-2xl bg-gradient-to-tr from-primary via-indigo-500 to-accent shadow-[0_0_20px_rgba(99,102,241,0.35)] group-hover:scale-105 group-hover:rotate-3 transition-all duration-300 shrink-0">
-              <Download className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
-              <div className="absolute inset-0 rounded-xl sm:rounded-2xl bg-white/20 opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+        <div className="max-w-7xl mx-auto h-14 flex items-center justify-between gap-3">
+
+          {/* ── Logo ── */}
+          <Link href="/" className="flex items-center gap-2.5 group shrink-0 min-w-0">
+            <div
+              className="relative flex items-center justify-center rounded-xl bg-gradient-to-tr from-primary via-indigo-500 to-accent group-hover:scale-105 group-hover:rotate-3 transition-transform duration-300 shrink-0"
+              style={{ width: 36, height: 36 }}
+            >
+              <Download className="w-4 h-4 text-white" />
+              <div className="absolute inset-0 rounded-xl bg-white/20 opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
             </div>
             <div className="flex flex-col min-w-0">
               <span className="font-headline text-base sm:text-xl font-black tracking-tight text-white leading-none whitespace-nowrap">
-                Clip<span className="text-primary bg-clip-text bg-gradient-to-r from-primary to-accent">Grab</span>
+                Clip<span className="text-transparent bg-clip-text bg-gradient-to-r from-primary to-accent">Grab</span>
               </span>
-              <span className="text-[7.5px] sm:text-[9px] font-bold text-muted-foreground/60 uppercase tracking-widest mt-0.5 sm:mt-1 whitespace-nowrap">
+              {/* Hide subtitle below 380px */}
+              <span className="hidden text-[8px] sm:text-[9px] font-bold text-muted-foreground/60 uppercase tracking-widest mt-0.5 whitespace-nowrap min-[380px]:block">
                 Media Studio
               </span>
             </div>
           </Link>
-          
-          {/* Desktop Navigation (>= 640px) */}
-          <div className="hidden sm:flex items-center gap-2 sm:gap-2.5">
-            {/* Library / Player Button */}
-            <Button
-              variant="ghost"
-              size="sm"
+
+          {/* ── Desktop Action Group (>= 640px) ── */}
+          <div className="hidden sm:flex items-center gap-2">
+            {/* Library button — pill with label + badge */}
+            <button
+              type="button"
               onClick={openLibrary}
-              className="h-9 px-3.5 rounded-xl bg-white/[0.04] hover:bg-white/10 text-white font-semibold text-xs sm:text-sm gap-1.5 border border-white/5 cursor-pointer active:scale-95"
+              aria-label="Open Library and saved videos"
               title="Open ClipGrab Player & Saved Downloads"
+              className={`relative inline-flex items-center gap-1.5 h-10 px-3.5 rounded-full border transition-all duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 active:scale-95 ${
+                libraryOpen
+                  ? 'bg-primary/15 border-primary/30 text-primary'
+                  : 'bg-white/[0.05] border-white/[0.08] hover:bg-white/10 text-white'
+              }`}
             >
-              <Film className="w-4 h-4 text-primary" />
-              <span>Player &amp; Library</span>
-            </Button>
-            
-            {/* Interactive Engine Switcher / Status Pill */}
+              <Film className={`w-4 h-4 shrink-0 ${libraryOpen ? 'text-primary' : 'text-white/80'}`} />
+              <span className="text-sm font-semibold">Library</span>
+              {savedCount > 0 && (
+                <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-primary text-white text-[10px] font-bold leading-none">
+                  {savedCount > 99 ? '99+' : savedCount}
+                </span>
+              )}
+            </button>
+
+            {/* Engine status pill */}
             <button
               onClick={() => setSettingsOpen(true)}
               title="Click to configure backend engine or Google Colab"
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-full border transition-all duration-200 hover:scale-[1.02] focus:outline-none focus:ring-2 focus:ring-primary/50 cursor-pointer ${
-                isColabActive
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-full border transition-all duration-200 hover:scale-[1.02] focus:outline-none focus:ring-2 focus:ring-primary/50 cursor-pointer ${isColabActive
                   ? "bg-amber-500/10 border-amber-500/30 hover:bg-amber-500/20 text-amber-300 shadow-[0_0_15px_rgba(245,158,11,0.15)]"
                   : "bg-white/[0.03] border-white/[0.08] hover:bg-white/[0.06] text-white"
-              }`}
+                }`}
             >
               <span className="relative flex h-2 w-2">
                 {engineStatus === 'online' && (
@@ -168,7 +217,6 @@ export function Navbar() {
                   </>
                 )}
               </span>
-
               <span className="text-[11px] font-bold tracking-wide flex items-center gap-1">
                 {isColabActive ? (
                   <>
@@ -184,57 +232,65 @@ export function Navbar() {
               </span>
             </button>
 
-            {/* Quick Share QR Code Button */}
-            <Button
-              variant="outline"
-              size="sm"
+            {/* QR Sync button */}
+            <button
+              type="button"
               onClick={() => setQrOpen(true)}
-              className="h-9 px-3 rounded-xl border-amber-500/25 bg-amber-500/5 hover:bg-amber-500/15 text-amber-300 text-xs font-bold gap-1.5 cursor-pointer active:scale-95"
+              aria-label="Share engine via QR Code"
               title="Share engine via QR Code to mobile or other devices"
+              className="h-10 px-3 rounded-full border border-amber-500/25 bg-amber-500/5 hover:bg-amber-500/15 text-amber-300 text-xs font-bold gap-1.5 flex items-center cursor-pointer active:scale-95 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400/50"
             >
               <QrCode className="w-3.5 h-3.5 text-amber-400 shrink-0" />
               <span>QR Sync</span>
-            </Button>
+            </button>
           </div>
 
-          {/* Mobile Header Actions (< 640px) */}
-          <div className="flex sm:hidden items-center gap-1.5 shrink-0">
-            {/* Direct Player & Library Access */}
+          {/* ── Mobile Action Group (< 640px) ── */}
+          <div className="flex sm:hidden items-center gap-2 shrink-0">
+
+            {/* Library button — icon + count badge */}
             <button
               type="button"
               onClick={openLibrary}
-              aria-label="Open ClipGrab Player and Library"
-              className="h-8.5 px-2.5 rounded-xl bg-primary/15 hover:bg-primary/25 border border-primary/30 text-white font-semibold text-xs flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer"
+              aria-label={savedCount > 0 ? `Open Library — ${savedCount} saved videos` : 'Open Library'}
+              style={{ minWidth: 44, minHeight: 44 }}
+              className={`relative flex items-center justify-center w-10 h-10 rounded-full border transition-all duration-150 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 active:scale-95 ${
+                libraryOpen
+                  ? 'bg-primary/15 border-primary/30'
+                  : 'bg-white/[0.05] border-white/[0.08] hover:bg-white/10'
+              }`}
             >
-              <Film className="w-3.5 h-3.5 text-primary shrink-0" />
-              <span className="font-bold text-[11px] tracking-tight text-primary-foreground">Player</span>
+              <Film className={`w-[18px] h-[18px] ${libraryOpen ? 'text-primary' : 'text-white/80'}`} />
+              {savedCount > 0 && (
+                <span
+                  className="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 rounded-full bg-primary text-white text-[9px] font-bold leading-none ring-2 ring-[#07080d]"
+                  aria-hidden="true"
+                >
+                  {savedCount > 9 ? '9+' : savedCount}
+                </span>
+              )}
             </button>
 
-            {/* Compact Secondary Menu (•••) */}
-            <div data-mobile-menu className="relative">
+            {/* Menu button — icon + status dot inside corner */}
+            <div data-mobile-menu className="relative" style={{ minWidth: 44, minHeight: 44 }}>
               <button
                 type="button"
                 onClick={() => setMobileMenuOpen((prev) => !prev)}
-                aria-label="More options and engine settings"
+                aria-label={`More options and engine settings — ${statusLabel}`}
                 aria-expanded={mobileMenuOpen}
-                className="relative w-8.5 h-8.5 rounded-xl bg-white/[0.04] hover:bg-white/10 border border-white/10 text-white/80 hover:text-white flex items-center justify-center transition-all active:scale-95 cursor-pointer"
+                style={{ minWidth: 44, minHeight: 44 }}
+                className="relative flex items-center justify-center w-10 h-10 rounded-full bg-white/[0.05] hover:bg-white/10 border border-white/[0.08] text-white transition-all active:scale-95 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
               >
-                <MoreHorizontal className="w-4 h-4" />
-                {/* Status Indicator Dot on Menu */}
-                <span className="absolute -top-0.5 -right-0.5 flex h-2.5 w-2.5">
-                  {engineStatus === 'online' && (
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500 ring-2 ring-[#07080d]"></span>
-                  )}
-                  {engineStatus === 'degraded' && (
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500 ring-2 ring-[#07080d]"></span>
-                  )}
-                  {engineStatus === 'down' && (
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500 ring-2 ring-[#07080d]"></span>
-                  )}
-                </span>
+                <MoreHorizontal className="w-[18px] h-[18px]" />
+                {/* Status dot — reflects /api/health; inside button bottom-right corner */}
+                <span
+                  className={`absolute bottom-[7px] right-[7px] h-[7px] w-[7px] rounded-full ${statusColor} ring-[1.5px] ring-[#07080d]`}
+                  role="img"
+                  aria-label={statusLabel}
+                />
               </button>
 
-              {/* Controlled Dropdown Menu */}
+              {/* Dropdown */}
               {mobileMenuOpen && (
                 <>
                   <div
@@ -247,7 +303,7 @@ export function Navbar() {
                       Engine &amp; Settings
                     </div>
 
-                    {/* Cloud Engine / Colab Switcher */}
+                    {/* Engine / Colab Switcher */}
                     <button
                       type="button"
                       onClick={() => {
@@ -274,7 +330,7 @@ export function Navbar() {
                             )}
                           </span>
                           <span className="text-[10px] text-white/40">
-                            {engineStatus === 'online' ? (latencyMs ? `${latencyMs}ms ping` : 'Connected') : engineStatus}
+                            {engineStatus === 'online' ? (latencyMs ? `${latencyMs}ms ping` : 'Connected') : statusLabel}
                           </span>
                         </div>
                       </div>
@@ -323,6 +379,13 @@ export function Navbar() {
         engineUrl={apiUrl}
         isColab={isColabActive}
       />
+
+      {/* Backdrop-blur only at sm+ for mobile performance */}
+      <style>{`
+        @media (min-width: 640px) {
+          nav.fixed { backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+        }
+      `}</style>
     </>
   )
 }
