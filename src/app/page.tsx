@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import Link from "next/link"
 import { Navbar } from "@/components/Navbar"
 import { Footer } from "@/components/Footer"
@@ -39,7 +39,9 @@ import {
   Film,
   QrCode,
   Share2,
-  Key
+  Key,
+  FolderOpen,
+  WifiOff
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { ChatAssistant } from "@/components/ChatAssistant"
@@ -49,6 +51,8 @@ import { DownloadedLibrary } from "@/components/player/DownloadedLibrary"
 import { VideoSource } from "@/hooks/useVideoPlayer"
 import { generateVideoId, upsertWatchHistory, getWatchHistory, WatchHistoryEntry } from "@/lib/player-storage"
 import { formatRemainingTime, formatTime } from "@/lib/format-utils"
+import { registerActiveMedia } from "@/lib/indexed-media-store"
+import { generateFileThumbnail } from "@/lib/media-utils"
 
 interface VideoFormat {
   id: string
@@ -141,7 +145,42 @@ export default function Home() {
   const [isMiniPlaying, setIsMiniPlaying] = useState(false)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [recentHistory, setRecentHistory] = useState<WatchHistoryEntry[]>([])
+  const [isOffline, setIsOffline] = useState(false)
+  const offlineFileInputRef = useRef<HTMLInputElement | null>(null)
   const { toast } = useToast()
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      setIsOffline(!navigator.onLine)
+      const handleOnline = () => setIsOffline(false)
+      const handleOffline = () => setIsOffline(true)
+      window.addEventListener("online", handleOnline)
+      window.addEventListener("offline", handleOffline)
+      return () => {
+        window.removeEventListener("online", handleOnline)
+        window.removeEventListener("offline", handleOffline)
+      }
+    }
+  }, [])
+
+  const handleOpenOfflineLocalFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const id = generateVideoId(file.name, file.size.toString())
+    const safeObjectUrl = registerActiveMedia(id, file, file.name)
+    const thumb = await generateFileThumbnail(file).catch(() => "")
+
+    handleOpenPlayer({
+      id,
+      url: safeObjectUrl,
+      title: file.name.replace(/\.[^/.]+$/, ""),
+      thumbnail: thumb,
+      mimeType: file.type || "video/mp4",
+      fileSize: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
+    })
+    // Reset file input so selecting same file again triggers change event
+    if (offlineFileInputRef.current) offlineFileInputRef.current.value = ""
+  }
 
   useEffect(() => {
     setRecentHistory(getWatchHistory())
@@ -213,6 +252,16 @@ export default function Home() {
   const handleResolve = async (customUrl?: string) => {
     const targetUrl = customUrl || url
     if (!targetUrl) return
+
+    if (typeof navigator !== "undefined" && !navigator.onLine) {
+      toast({
+        variant: "destructive",
+        title: "Offline Mode Active",
+        description: "You are currently offline. Open your saved videos via 'Play Local Video' or check 'My Library'."
+      })
+      return
+    }
+
     setIsLoading(true)
     setMetadata(null)
     setDirectUrlFailed(false)
@@ -526,6 +575,56 @@ export default function Home() {
             </div>
           </div>
 
+          {/* Hidden Offline Local File Input */}
+          <input
+            ref={offlineFileInputRef}
+            type="file"
+            accept="video/*,audio/*"
+            onChange={handleOpenOfflineLocalFile}
+            className="hidden"
+          />
+
+          {/* Offline Mode Active Banner */}
+          {isOffline && (
+            <div className="max-w-3xl mx-auto mb-6 p-4 sm:p-5 rounded-2xl sm:rounded-3xl bg-gradient-to-r from-amber-500/10 via-primary/10 to-indigo-500/10 border border-amber-500/30 backdrop-blur-xl shadow-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 animate-in fade-in duration-300">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                  <WifiOff className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-white text-sm sm:text-base">Offline Player Mode</span>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                      No Internet
+                    </span>
+                  </div>
+                  <p className="text-xs text-white/60 mt-0.5">
+                    You can watch downloaded videos directly from your files or resume past sessions.
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 w-full sm:w-auto shrink-0">
+                <Button
+                  type="button"
+                  onClick={() => offlineFileInputRef.current?.click()}
+                  className="flex-1 sm:flex-none h-10 px-4 rounded-xl bg-primary hover:bg-primary/90 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-primary/25 cursor-pointer active:scale-95 transition-all"
+                >
+                  <FolderOpen className="w-4 h-4" />
+                  <span>Open Video File</span>
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => setLibraryOpen(true)}
+                  variant="outline"
+                  className="flex-1 sm:flex-none h-10 px-4 rounded-xl border-white/10 hover:bg-white/10 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer active:scale-95 transition-all"
+                >
+                  <Film className="w-4 h-4 text-primary" />
+                  <span>My Library</span>
+                </Button>
+              </div>
+            </div>
+          )}
+
           {/* Main URL Input Container */}
           <div className="max-w-3xl mx-auto">
             <div className={`relative transition-transform duration-300 ${isSearchFocused ? 'scale-[1.015]' : 'scale-100'}`}>
@@ -604,9 +703,17 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Quick Test Demo Links */}
+            {/* Quick Test Demo Links + Local Video Action */}
             <div className="mt-4 flex flex-wrap justify-center items-center gap-2 text-xs">
-              <span className="text-brand-text-muted/50 font-bold uppercase tracking-wider text-[10px]">Try Quick Test:</span>
+              <button
+                type="button"
+                onClick={() => offlineFileInputRef.current?.click()}
+                className="px-3.5 py-1.5 rounded-xl bg-primary/10 border border-primary/30 hover:bg-primary/20 text-primary hover:text-white font-bold transition-all duration-200 flex items-center gap-1.5 cursor-pointer shadow-sm active:scale-95"
+              >
+                <FolderOpen className="w-3.5 h-3.5" />
+                Play Local File
+              </button>
+              <span className="text-brand-text-muted/50 font-bold uppercase tracking-wider text-[10px] ml-1">Try Quick Test:</span>
               <button
                 onClick={() => loadDemoUrl('youtube')}
                 className="px-3 py-1.5 rounded-xl bg-white/[0.02] border border-white/[0.06] hover:bg-white/5 hover:text-red-400 font-semibold text-brand-text-muted transition-all duration-200"
