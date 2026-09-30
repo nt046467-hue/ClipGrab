@@ -1,7 +1,8 @@
 // ProgressBar.tsx
-// High-precision YouTube-style seekbar with buffered indicator, smooth touch scrubbing, and timestamp bubble
+// High-precision YouTube-style seekbar with Pointer Events scrubbing,
+// 44px+ touch target, 3px -> 6px visual expansion, thumb circle, and timestamp bubble
 
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, PointerEvent } from 'react';
 import { formatTime } from '@/lib/format-utils';
 
 interface ProgressBarProps {
@@ -10,9 +11,10 @@ interface ProgressBarProps {
   bufferedEnd: number;
   onSeek: (time: number) => void;
   disabled?: boolean;
-  /** Called when user starts dragging the scrubber (hold controls visible) */
+  onInteract?: () => void;
+  /** Called when user starts dragging the scrubber (pins 'scrubbing') */
   onScrubStart?: () => void;
-  /** Called when user finishes dragging the scrubber (restart auto-hide timer) */
+  /** Called when user finishes dragging the scrubber (unpins 'scrubbing') */
   onScrubEnd?: () => void;
 }
 
@@ -22,6 +24,7 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
   bufferedEnd,
   onSeek,
   disabled = false,
+  onInteract,
   onScrubStart,
   onScrubEnd,
 }) => {
@@ -29,6 +32,7 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const [dragProgress, setDragProgress] = useState(0); // 0 to 1
   const [hoverPosition, setHoverPosition] = useState<number | null>(null);
+  const activePointerIdRef = useRef<number | null>(null);
 
   const safeDuration = duration > 0 && isFinite(duration) ? duration : 1;
   const currentProgress = Math.max(0, Math.min(1, currentTime / safeDuration));
@@ -36,84 +40,70 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
 
   const effectiveProgress = isDragging ? dragProgress : currentProgress;
 
-  const calculateProgressFromEvent = useCallback(
-    (clientX: number) => {
-      if (!barRef.current) return 0;
-      const rect = barRef.current.getBoundingClientRect();
-      const clickX = clientX - rect.left;
-      return Math.max(0, Math.min(1, clickX / rect.width));
-    },
-    []
-  );
+  const calculateProgressFromClientX = useCallback((clientX: number) => {
+    if (!barRef.current) return 0;
+    const rect = barRef.current.getBoundingClientRect();
+    const clickX = clientX - rect.left;
+    return Math.max(0, Math.min(1, clickX / rect.width));
+  }, []);
 
-  // Mouse handlers
-  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+  const handlePointerDown = (e: PointerEvent<HTMLDivElement>) => {
     if (disabled || e.button !== 0) return;
-    const progress = calculateProgressFromEvent(e.clientX);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+      activePointerIdRef.current = e.pointerId;
+    } catch {}
+
+    const progress = calculateProgressFromClientX(e.clientX);
     setIsDragging(true);
     setDragProgress(progress);
     onSeek(progress * safeDuration);
     onScrubStart?.();
+    onInteract?.();
   };
 
-  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+  const handlePointerMove = (e: PointerEvent<HTMLDivElement>) => {
     if (disabled) return;
-    const progress = calculateProgressFromEvent(e.clientX);
-    setHoverPosition(progress);
-  };
 
-  const handleMouseLeave = () => {
-    setHoverPosition(null);
-  };
-
-  // Touch handlers for mobile
-  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
-    if (disabled || e.touches.length !== 1) return;
-    e.stopPropagation(); // prevent gesture recognizer from treating this as a player tap
-    const progress = calculateProgressFromEvent(e.touches[0].clientX);
-    setIsDragging(true);
-    setDragProgress(progress);
-    onScrubStart?.();
-  };
-
-  const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
-    if (!isDragging || e.touches.length !== 1) return;
-    const progress = calculateProgressFromEvent(e.touches[0].clientX);
-    setDragProgress(progress);
-  };
-
-  const handleTouchEnd = () => {
     if (isDragging) {
-      onSeek(dragProgress * safeDuration);
-      setIsDragging(false);
-      onScrubEnd?.();
+      const progress = calculateProgressFromClientX(e.clientX);
+      setDragProgress(progress);
+      onSeek(progress * safeDuration);
+      onInteract?.();
+    } else if (e.pointerType === 'mouse') {
+      const progress = calculateProgressFromClientX(e.clientX);
+      setHoverPosition(progress);
     }
   };
 
-  // Global window listeners for drag end
-  useEffect(() => {
+  const handlePointerUp = (e: PointerEvent<HTMLDivElement>) => {
     if (!isDragging) return;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {}
+    activePointerIdRef.current = null;
 
-    const handleWindowMouseMove = (e: MouseEvent) => {
-      const progress = calculateProgressFromEvent(e.clientX);
-      setDragProgress(progress);
-    };
+    const progress = calculateProgressFromClientX(e.clientX);
+    onSeek(progress * safeDuration);
+    setIsDragging(false);
+    onScrubEnd?.();
+    onInteract?.();
+  };
 
-    const handleWindowMouseUp = (e: MouseEvent) => {
-      const progress = calculateProgressFromEvent(e.clientX);
-      onSeek(progress * safeDuration);
-      setIsDragging(false);
-      onScrubEnd?.();
-    };
+  const handlePointerCancel = (e: PointerEvent<HTMLDivElement>) => {
+    if (!isDragging) return;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {}
+    activePointerIdRef.current = null;
 
-    window.addEventListener('mousemove', handleWindowMouseMove);
-    window.addEventListener('mouseup', handleWindowMouseUp);
+    setIsDragging(false);
+    onScrubEnd?.();
+  };
 
-    return () => {
-      window.removeEventListener('mousemove', handleWindowMouseMove);
-      window.removeEventListener('mouseup', handleWindowMouseUp);
-    };
-  }, [isDragging, calculateProgressFromEvent, safeDuration, onSeek]);
+  const handlePointerLeave = () => {
+    setHoverPosition(null);
+  };
 
   const scrubTimestamp = formatTime(
     (isDragging ? dragProgress : (hoverPosition ?? currentProgress)) * safeDuration
@@ -122,26 +112,25 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
   return (
     <div
       ref={barRef}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseLeave={handleMouseLeave}
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerCancel}
+      onPointerLeave={handlePointerLeave}
       role="slider"
       aria-label="Video seek position"
       aria-valuemin={0}
       aria-valuemax={Math.round(safeDuration)}
       aria-valuenow={Math.round(effectiveProgress * safeDuration)}
       tabIndex={0}
-      className={`relative w-full py-3 cursor-pointer select-none group touch-none ${
+      className={`relative w-full min-h-[44px] py-4 flex items-center cursor-pointer select-none group touch-none pointer-events-auto ${
         disabled ? 'opacity-40 cursor-not-allowed pointer-events-none' : ''
       }`}
     >
       {/* Floating Scrub Time Popup */}
       {(isDragging || hoverPosition !== null) && (
         <div
-          className="absolute -top-10 px-2.5 py-1 rounded-lg bg-black/90 border border-white/20 text-white font-mono font-bold text-xs sm:text-sm tracking-tight -translate-x-1/2 pointer-events-none shadow-2xl backdrop-blur-md z-30 transition-transform duration-75"
+          className="absolute -top-6 px-2.5 py-1 rounded-lg bg-black/90 border border-white/20 text-white font-mono font-bold text-xs sm:text-sm tracking-tight -translate-x-1/2 pointer-events-none shadow-2xl backdrop-blur-md z-30 transition-transform duration-75"
           style={{
             left: `${(isDragging ? dragProgress : (hoverPosition || 0)) * 100}%`,
           }}
@@ -150,8 +139,12 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
         </div>
       )}
 
-      {/* Main Track Container */}
-      <div className="relative w-full h-1 sm:h-1.5 bg-white/20 rounded-full transition-all duration-200 group-hover:h-2">
+      {/* Main Track Container: 3px idle, expands to 6px on hover or drag */}
+      <div
+        className={`relative w-full rounded-full transition-all duration-200 bg-white/20 ${
+          isDragging ? 'h-1.5' : 'h-[3px] group-hover:h-1.5'
+        }`}
+      >
         {/* Buffer Bar */}
         <div
           className="absolute top-0 left-0 bottom-0 bg-white/35 rounded-full transition-all duration-150"
@@ -172,12 +165,12 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
           style={{ width: `${effectiveProgress * 100}%` }}
         />
 
-        {/* Scrub Handle / Thumb */}
+        {/* Scrub Handle / Thumb: circle grows when dragging or hovered */}
         <div
           className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 rounded-full bg-white shadow-xl border-2 border-primary transition-all duration-150 ${
             isDragging
-              ? 'w-5 h-5 scale-125 ring-4 ring-primary/40'
-              : 'w-3.5 h-3.5 opacity-90 group-hover:w-4 group-hover:h-4 group-hover:scale-110'
+              ? 'w-4 h-4 scale-125 ring-4 ring-primary/40 opacity-100'
+              : 'w-3 h-3 opacity-90 group-hover:w-3.5 group-hover:h-3.5 group-hover:scale-110'
           }`}
           style={{ left: `${effectiveProgress * 100}%` }}
         />

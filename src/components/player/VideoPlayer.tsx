@@ -1,6 +1,7 @@
 // VideoPlayer.tsx
 // Master production-grade ClipGrab video player component for mobile & desktop
-// Supports 4 distinct modes: Desktop Windowed, Desktop Fullscreen, Mobile Windowed, Mobile Fullscreen
+// Features YouTube mobile player parity: single gesture layer, unified controls visibility
+// state machine, double-tap seek, 2x long-press, swipe seek & minimize, keyboard shortcuts
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
@@ -12,6 +13,7 @@ import { usePictureInPicture } from '@/hooks/usePictureInPicture';
 import { useMediaSession } from '@/hooks/useMediaSession';
 import { usePlayerGestures } from '@/hooks/usePlayerGestures';
 import { useKeyboardControls } from '@/hooks/useKeyboardControls';
+import { useControlsVisibility } from '@/hooks/useControlsVisibility';
 import { PlayerControls } from './PlayerControls';
 import { SeekOverlay } from './SeekOverlay';
 import { SettingsMenu } from './SettingsMenu';
@@ -29,6 +31,7 @@ import {
   RotateCcw,
   ArrowLeft,
   Play,
+  Pause,
   Loader2,
   ChevronLeft,
   Share2,
@@ -64,6 +67,8 @@ export interface VideoPlayerProps {
   onMiniStatusChange?: (isPlaying: boolean) => void;
 }
 
+const SPEED_STEPS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+
 export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   source,
   onClose,
@@ -80,21 +85,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   onMiniStatusChange,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  // Ref for the info section — used to scroll to it when title is clicked
   const infoSectionRef = useRef<HTMLElement | null>(null);
-
-  // Auto-hide controls state
-  const [controlsVisible, setControlsVisible] = useState(true);
-  const hideTimerRef = useRef<NodeJS.Timeout | null>(null);
-  // Track if user is scrubbing — freeze hide timer during scrub
-  const isScrubbingRef = useRef(false);
-  // Always-current ref so gesture callbacks can read controlsVisible without stale closure
-  const controlsVisibleRef = useRef(true);
-  // Keep ref in sync with state
-  useEffect(() => { controlsVisibleRef.current = controlsVisible; }, [controlsVisible]);
-
-  // Desktop single-click: track pending single-click to distinguish from double-click
-  const singleClickTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Settings & Subtitles modal states
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -124,6 +115,22 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   // PiP controller
   const pip = usePictureInPicture(player.videoRef);
 
+  // ── Unified Controls Visibility Hook (Single source of truth) ──
+  const controls = useControlsVisibility({
+    status: player.status,
+    sourceId: source.id,
+    autoHideDuration: 3000,
+  });
+
+  // Pin controls while settings or subtitles modal is open
+  useEffect(() => {
+    if (settingsOpen || subtitlesOpen) {
+      controls.pin('menu');
+    } else {
+      controls.unpin('menu');
+    }
+  }, [settingsOpen, subtitlesOpen, controls]);
+
   // Load other saved videos for queue/shelf below player
   useEffect(() => {
     try {
@@ -134,163 +141,212 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }
   }, [source.id]);
 
-  // ── Auto-hide logic (YouTube mobile: 3 seconds, never while paused or scrubbing) ──
-  const resetHideTimer = useCallback((customDuration?: number) => {
-    setControlsVisible(true);
-    if (hideTimerRef.current) {
-      clearTimeout(hideTimerRef.current);
-      hideTimerRef.current = null;
-    }
-    // Only auto-hide if actively playing AND user isn't scrubbing AND no modal open
-    if (player.status === 'playing' && !isScrubbingRef.current && !settingsOpen && !subtitlesOpen) {
-      hideTimerRef.current = setTimeout(() => {
-        setControlsVisible(false);
-      }, customDuration ?? 3000); // YouTube uses ~3s on mobile
-    }
-  }, [player.status, settingsOpen, subtitlesOpen]);
+  // ── Fullscreen toggle with playback preservation ──
+  const wasPlayingAtFullscreenRef = useRef(false);
 
-  // Called by ProgressBar when user touches the seekbar
-  const handleScrubStart = useCallback(() => {
-    isScrubbingRef.current = true;
-    // Keep controls visible while scrubbing — cancel any pending hide
-    setControlsVisible(true);
-    if (hideTimerRef.current) {
-      clearTimeout(hideTimerRef.current);
-      hideTimerRef.current = null;
+  const handleToggleFullscreen = useCallback(async () => {
+    const isPlaying =
+      player.status === 'playing' ||
+      player.status === 'buffering' ||
+      (!!player.videoRef.current && !player.videoRef.current.paused && player.status !== 'ended');
+    if (isPlaying) {
+      wasPlayingAtFullscreenRef.current = true;
     }
-  }, []);
+    await fullscreen.toggleFullscreen();
+  }, [player.status, player.videoRef, fullscreen]);
 
-  // Called by ProgressBar when user lifts finger off seekbar
-  const handleScrubEnd = useCallback(() => {
-    isScrubbingRef.current = false;
-    // Resume 3s timer after scrubbing ends (if still playing)
-    resetHideTimer(3000);
-  }, [resetHideTimer]);
+  // Resume playback if video was active before entering/exiting fullscreen
+  useEffect(() => {
+    if (wasPlayingAtFullscreenRef.current) {
+      const vid = player.videoRef.current;
+      const attemptResume = () => {
+        if (vid && vid.paused && player.status !== 'error' && player.status !== 'ended') {
+          vid.play().catch(() => {});
+        }
+      };
+      const t1 = setTimeout(attemptResume, 60);
+      const t2 = setTimeout(attemptResume, 180);
+      const t3 = setTimeout(() => {
+        attemptResume();
+        wasPlayingAtFullscreenRef.current = false;
+      }, 350);
+      return () => {
+        clearTimeout(t1);
+        clearTimeout(t2);
+        clearTimeout(t3);
+      };
+    }
+  }, [fullscreen.isFullscreen, player.status, player.videoRef]);
+
+  // ── Screen Wake Lock API (keeps screen awake while playing) ──
+  const wakeLockRef = useRef<any>(null);
 
   useEffect(() => {
-    if (player.status === 'paused' || player.status === 'ended') {
-      // YouTube behavior: when paused/ended, controls stay visible permanently
-      setControlsVisible(true);
-      if (hideTimerRef.current) {
-        clearTimeout(hideTimerRef.current);
-        hideTimerRef.current = null;
+    const requestWakeLock = async () => {
+      if (
+        typeof navigator !== 'undefined' &&
+        'wakeLock' in navigator &&
+        (navigator as any).wakeLock
+      ) {
+        try {
+          if (!wakeLockRef.current && player.status === 'playing') {
+            wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+            wakeLockRef.current.addEventListener('release', () => {
+              wakeLockRef.current = null;
+            });
+          }
+        } catch {
+          // wake lock request may be denied on battery saver or tab blur
+        }
       }
-    } else if (player.status === 'playing') {
-      // Only start auto-hide if not already scrubbing
-      if (!isScrubbingRef.current) {
-        resetHideTimer(3000);
-      }
-    }
-    return () => {
-      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
     };
-  }, [player.status, resetHideTimer]);
 
-  // Gestures (double-tap seek left/right, horizontal swipe, single tap) — mobile & touch
+    const releaseWakeLock = async () => {
+      if (wakeLockRef.current) {
+        try {
+          await wakeLockRef.current.release();
+        } catch {}
+        wakeLockRef.current = null;
+      }
+    };
+
+    if (player.status === 'playing') {
+      requestWakeLock();
+    } else {
+      releaseWakeLock();
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && player.status === 'playing') {
+        requestWakeLock();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      releaseWakeLock();
+    };
+  }, [player.status]);
+
+  // ── On-screen toast notifications (volume, speed, seek, mute) ──
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const toastTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const showToast = useCallback((msg: string) => {
+    setToastMessage(msg);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => {
+      setToastMessage(null);
+    }, 1100);
+  }, []);
+
+  // ── Unified Gesture Recognizer ──
   const gestures = usePlayerGestures({
     seekAmount: player.settings.seekAmount,
     duration: player.duration,
     currentTime: player.currentTime,
+    isFullscreen: fullscreen.isFullscreen,
     onSeek: player.seek,
     onSeekRelative: player.seekRelative,
-    // ── Single tap instantly shows controls (YouTube behavior) ──
-    // onFirstTap fires immediately; onToggleControls fires 280ms later after
-    // the double-tap detection window expires.
-    onFirstTap: () => {
-      if (player.status === 'playing') {
-        if (!controlsVisibleRef.current) {
-          // Controls are hidden → show them and start 3s hide timer
-          setControlsVisible(true);
-          if (hideTimerRef.current) { clearTimeout(hideTimerRef.current); hideTimerRef.current = null; }
-          if (!isScrubbingRef.current && !settingsOpen && !subtitlesOpen) {
-            hideTimerRef.current = setTimeout(() => setControlsVisible(false), 3000);
-          }
-        }
-        // Controls already visible → onToggleControls will hide them after 280ms
+    onTogglePlay: player.togglePlay,
+    onToggleFullscreen: handleToggleFullscreen,
+    onMinimize,
+    onTemporarySpeedChange: (speed) => {
+      const video = player.videoRef.current;
+      if (!video) return;
+      if (speed !== null) {
+        video.playbackRate = speed;
+      } else {
+        video.playbackRate = player.settings.playbackRate;
       }
-      // When paused: controls always stay visible
     },
-    onToggleControls: () => {
-      // Called 280ms after tap (double-tap window expired — confirmed single tap)
-      if (player.status === 'playing') {
-        if (controlsVisibleRef.current) {
-          // Controls are visible → HIDE them (toggle off)
-          if (hideTimerRef.current) { clearTimeout(hideTimerRef.current); hideTimerRef.current = null; }
-          setControlsVisible(false);
-        } else {
-          // Controls are hidden → START 3s timer (already shown by onFirstTap)
-          resetHideTimer(3000);
-        }
-      }
-      // When paused: controls stay visible, nothing to do
-    },
-    onTogglePlay: () => {
-      player.togglePlay();
-      // After tapping play/pause, show controls briefly then auto-hide in 3s
-      resetHideTimer(3000);
-    },
+    controlsVisibleRef: controls.visibleRef,
+    showControls: controls.show,
+    hideControls: controls.hide,
+    keepAlive: controls.keepAlive,
+    pin: controls.pin,
+    unpin: controls.unpin,
   });
 
-  // Desktop double-click: left zone rewinds by seekAmount, right zone forwards by seekAmount, center toggles play/pause
-  const handleDoubleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    // If recent touch (mobile tap), ignore synthetic dblclick
-    if (gestures.isRecentTouch()) return;
-    if (player.status === 'error' || player.status === 'ended') return;
-
-    if (singleClickTimerRef.current) {
-      clearTimeout(singleClickTimerRef.current);
-      singleClickTimerRef.current = null;
-    }
-
-    const rect = e.currentTarget.getBoundingClientRect();
-    const clickX = e.clientX - rect.left;
-    const width = rect.width;
-    const leftZone = width * 0.38;
-    const rightZone = width * 0.62;
-
-    if (clickX < leftZone) {
-      // Double click left -> rewind by seekAmount
-      player.seekRelative(-player.settings.seekAmount);
-      gestures.triggerFeedback('rewind', player.settings.seekAmount);
-    } else if (clickX > rightZone) {
-      // Double click right -> forward by seekAmount
-      player.seekRelative(player.settings.seekAmount);
-      gestures.triggerFeedback('forward', player.settings.seekAmount);
-    } else {
-      // Center double click -> toggle play/pause (suppressed if buffering)
-      if (player.status !== 'buffering') {
-        if (player.status === 'playing') {
-          player.pause();
-        } else {
-          player.play();
+  // ── Desktop Keyboard Hotkeys (Space, K, J, L, Left, Right, Up, Down, 0-9, <, >, Home, End) ──
+  useKeyboardControls(
+    {
+      onTogglePlay: () => {
+        player.togglePlay();
+        showToast(player.status === 'playing' ? 'Pause' : 'Play');
+      },
+      onSeekRelative: (seconds) => {
+        player.seekRelative(seconds);
+        const target = Math.max(0, Math.min(player.duration || Infinity, player.currentTime + seconds));
+        showToast(`${seconds > 0 ? '+' : ''}${seconds}s (${formatTime(target)})`);
+      },
+      onSeekToPercent: (pct) => {
+        if (player.duration > 0) {
+          const target = pct * player.duration;
+          player.seek(target);
+          showToast(`${Math.round(pct * 100)}% (${formatTime(target)})`);
         }
-      }
-    }
-    resetHideTimer();
-  }, [player, gestures, resetHideTimer]);
-
-  // Desktop: single click → toggle play/pause (suppressed if recent touch or buffering)
-  const handleSingleClick = useCallback(() => {
-    if (gestures.isRecentTouch()) return;
-    if (player.status === 'error' || player.status === 'ended') return;
-
-    if (singleClickTimerRef.current) {
-      clearTimeout(singleClickTimerRef.current);
-      singleClickTimerRef.current = null;
-    }
-    // Small delay to distinguish from double-click
-    singleClickTimerRef.current = setTimeout(() => {
-      if (player.status !== 'buffering') {
-        if (player.status === 'playing') {
-          player.pause();
-        } else {
-          player.play();
+      },
+      onSeekToStart: () => {
+        player.seek(0);
+        showToast('00:00');
+      },
+      onSeekToEnd: () => {
+        if (player.duration > 0) {
+          player.seek(player.duration);
+          showToast(formatTime(player.duration));
         }
-      }
-      resetHideTimer(3000);
-      singleClickTimerRef.current = null;
-    }, 220);
-  }, [gestures, player, resetHideTimer]);
+      },
+      onVolumeUp: () => {
+        const next = Math.min(1, Math.round((player.settings.volume + 0.05) * 100) / 100);
+        player.setVolume(next);
+        showToast(`Volume ${Math.round(next * 100)}%`);
+      },
+      onVolumeDown: () => {
+        const next = Math.max(0, Math.round((player.settings.volume - 0.05) * 100) / 100);
+        player.setVolume(next);
+        showToast(`Volume ${Math.round(next * 100)}%`);
+      },
+      onToggleMute: () => {
+        player.toggleMute();
+        showToast(!player.settings.muted ? 'Muted' : 'Unmuted');
+      },
+      onToggleFullscreen: handleToggleFullscreen,
+      onTogglePiP: pip.togglePiP,
+      onToggleCaptions: () => {
+        if (subtitleTracks.length > 0) {
+          setActiveSubtitleTrackId((prev) => {
+            const next = prev ? null : subtitleTracks[0].id;
+            showToast(next ? 'Subtitles On' : 'Subtitles Off');
+            return next;
+          });
+        } else {
+          setSubtitlesOpen(true);
+        }
+      },
+      onStepSpeed: (direction) => {
+        const current = player.settings.playbackRate;
+        let idx = SPEED_STEPS.findIndex((s) => s === current);
+        if (idx === -1) idx = SPEED_STEPS.findIndex((s) => s >= current);
+        const nextIdx = Math.max(0, Math.min(SPEED_STEPS.length - 1, (idx === -1 ? 3 : idx) + direction));
+        const nextSpeed = SPEED_STEPS[nextIdx];
+        player.setPlaybackRate(nextSpeed);
+        showToast(`Speed ${nextSpeed}x`);
+      },
+      onCloseSettings: () => {
+        if (settingsOpen) setSettingsOpen(false);
+        else if (subtitlesOpen) setSubtitlesOpen(false);
+        else if (fullscreen.isFullscreen) fullscreen.exitFullscreen();
+        else onClose();
+      },
+      onActivity: () => {
+        controls.show(true);
+        controls.keepAlive();
+      },
+    },
+    !settingsOpen && !subtitlesOpen
+  );
 
   // Native Media Session integration (lock screen controls)
   useMediaSession({
@@ -310,49 +366,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     onNext: onPlayNext,
   });
 
-  // ── Fix: browsers (Chrome/Firefox/Edge desktop) pause <video> when toggling fullscreen ──
-  // Track playing state before toggle and automatically resume playback across fullscreen transitions.
-  const wasPlayingAtFullscreenRef = useRef(false);
-
-  const handleToggleFullscreen = useCallback(async () => {
-    const isPlaying =
-      player.status === 'playing' ||
-      player.status === 'buffering' ||
-      (!!player.videoRef.current && !player.videoRef.current.paused && player.status !== 'ended');
-    if (isPlaying) {
-      wasPlayingAtFullscreenRef.current = true;
-    }
-    await fullscreen.toggleFullscreen();
-  }, [player.status, player.videoRef, fullscreen]);
-
-  // Desktop keyboard hotkeys with input-field protection
-  useKeyboardControls(
-    {
-      onTogglePlay: player.togglePlay,
-      onSeekBackward: () => player.seekRelative(-player.settings.seekAmount),
-      onSeekForward: () => player.seekRelative(player.settings.seekAmount),
-      onVolumeUp: () => player.setVolume(Math.min(1, player.settings.volume + 0.05)),
-      onVolumeDown: () => player.setVolume(Math.max(0, player.settings.volume - 0.05)),
-      onToggleMute: player.toggleMute,
-      onToggleFullscreen: handleToggleFullscreen,
-      onTogglePiP: pip.togglePiP,
-      onToggleCaptions: () => {
-        if (subtitleTracks.length > 0) {
-          setActiveSubtitleTrackId((prev) => (prev ? null : subtitleTracks[0].id));
-        } else {
-          setSubtitlesOpen(true);
-        }
-      },
-      onCloseSettings: () => {
-        if (settingsOpen) setSettingsOpen(false);
-        else if (subtitlesOpen) setSubtitlesOpen(false);
-        else if (fullscreen.isFullscreen) fullscreen.exitFullscreen();
-        else onClose();
-      },
-    },
-    !settingsOpen && !subtitlesOpen
-  );
-
   // Web Share API handler
   const handleShare = async () => {
     if (typeof navigator !== 'undefined' && navigator.share) {
@@ -368,7 +381,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     } else {
       try {
         await navigator.clipboard.writeText(source.url);
-        alert('Video stream link copied to clipboard!');
+        showToast('Stream link copied to clipboard!');
       } catch {
         // clipboard access restricted
       }
@@ -394,32 +407,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   const isLandscape = player.isVideoLandscape;
   const aspectRatioValue = player.aspectRatio || (isLandscape ? 16 / 9 : 9 / 16);
 
-  // Resume playback if video was active before entering or exiting fullscreen
-  useEffect(() => {
-    if (wasPlayingAtFullscreenRef.current) {
-      const vid = player.videoRef.current;
-      const attemptResume = () => {
-        if (vid && vid.paused && player.status !== 'error' && player.status !== 'ended') {
-          vid.play().catch(() => {});
-        }
-      };
-      const t1 = setTimeout(attemptResume, 60);
-      const t2 = setTimeout(attemptResume, 180);
-      const t3 = setTimeout(() => {
-        attemptResume();
-        wasPlayingAtFullscreenRef.current = false;
-      }, 350);
-      return () => {
-        clearTimeout(t1);
-        clearTimeout(t2);
-        clearTimeout(t3);
-      };
-    }
-  }, [fullscreen.isFullscreen, player.status, player.videoRef]);
-
-  // Title expand state for long titles
-  const [titleExpanded, setTitleExpanded] = useState(false);
-
   // Notify parent of play status changes (used by MiniPlayer)
   useEffect(() => {
     if (onMiniStatusChange) {
@@ -434,8 +421,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     return () => window.removeEventListener('clipgrab_mini_toggle_play', handler);
   }, [player.togglePlay]);
 
-  // Use display:none when in mini mode — keeps the entire DOM tree (incl. <video>) mounted
-  // so currentTime, buffered data, and PiP all persist seamlessly
   return (
     <div
       className={
@@ -447,7 +432,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         paddingTop: fullscreen.isFullscreen ? undefined : 'max(0.5rem, env(safe-area-inset-top, 0px))',
         paddingBottom: fullscreen.isFullscreen ? undefined : 'max(2.5rem, calc(env(safe-area-inset-bottom, 0px) + 1.5rem))',
         touchAction: fullscreen.isFullscreen ? 'none' : 'pan-y',
-        // Hide full player UI when minimised but keep all elements mounted (preserves video currentTime)
         display: isMiniMode ? 'none' : undefined,
       }}
     >
@@ -516,29 +500,23 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         {/* ── THE PLAYER CONTAINER (.player-shell) ── */}
         <div
           ref={containerRef}
-          onMouseMove={() => resetHideTimer()}
-          onMouseLeave={() => {
-            if (player.status === 'playing') setControlsVisible(false);
-          }}
           onWheel={(e) => {
-            // Scroll up/down on player (windowed) = volume up/down
             if (fullscreen.isFullscreen) return;
             e.preventDefault();
             const delta = e.deltaY < 0 ? 0.05 : -0.05;
-            const newVol = Math.min(1, Math.max(0, player.settings.volume + delta));
+            const newVol = Math.min(1, Math.max(0, Math.round((player.settings.volume + delta) * 100) / 100));
             player.setVolume(newVol);
+            showToast(`Volume ${Math.round(newVol * 100)}%`);
+            controls.show(true);
+            controls.keepAlive();
           }}
           className={
             fullscreen.isFullscreen
               ? "fixed inset-0 z-50 bg-black flex items-center justify-center overflow-hidden w-screen h-[100dvh] max-w-none max-h-none rounded-none border-none"
-              : "player-shell relative w-full bg-black rounded-2xl sm:rounded-3xl overflow-hidden shadow-[0_20px_50px_rgba(0,0,0,0.85)] border border-white/[0.08] mx-auto flex items-center justify-center transition-all duration-200"
+              : "player-shell relative w-full bg-black rounded-2xl sm:rounded-3xl overflow-hidden shadow-[0_20px_50px_rgba(0,0,0,0.85)] border border-white/[0.08] mx-auto flex items-center justify-center"
           }
           style={{
-            aspectRatio: fullscreen.isFullscreen
-              ? 'auto'
-              : isLandscape
-                ? `${aspectRatioValue}`
-                : `${aspectRatioValue}`,
+            aspectRatio: fullscreen.isFullscreen ? 'auto' : `${aspectRatioValue}`,
             maxHeight: fullscreen.isFullscreen
               ? 'none'
               : isLandscape
@@ -549,27 +527,30 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               : !isLandscape
                 ? 'min(100%, 420px)'
                 : '100%',
-            // Isolate touch events to prevent scroll bleed
-            touchAction: fullscreen.isFullscreen ? 'none' : 'none',
+            touchAction: fullscreen.isFullscreen ? 'none' : 'pan-y',
+            WebkitTapHighlightColor: 'transparent',
+            // Hide mouse cursor on desktop fullscreen when controls are hidden
+            cursor: fullscreen.isFullscreen && !controls.visible ? 'none' : 'default',
+            // Follow-the-finger translate in windowed mode
+            transform:
+              !fullscreen.isFullscreen && gestures.dragTranslateY !== 0
+                ? `translateY(${gestures.dragTranslateY}px)`
+                : undefined,
+            transition: gestures.dragTranslateY !== 0 ? 'none' : 'transform 200ms ease-out',
           }}
         >
-          {/* Main Video Layer — handles touch gestures (mobile) and mouse clicks (desktop) */}
+          {/* Main Gesture & Video Layer — covers the whole player at all times */}
           <div
-            className="relative w-full h-full flex items-center justify-center overflow-hidden bg-black"
-            onTouchStart={gestures.handleTouchStart}
-            onTouchMove={gestures.handleTouchMove}
-            onTouchEnd={gestures.handleTouchEnd}
-            onClick={(e) => {
-              // Only fire for REAL mouse clicks — never for touch-synthesized click events.
-              // Touch is handled exclusively by the gesture hook above.
-              // This prevents: tap controls area (which stops touch propagation) → synthetic
-              // click leaks through → handleSingleClick fires → video pauses unexpectedly.
-              if ((e.nativeEvent as PointerEvent).pointerType !== 'mouse') return;
-              handleSingleClick();
-            }}
-            onDoubleClick={(e) => {
-              if ((e.nativeEvent as PointerEvent).pointerType !== 'mouse') return;
-              handleDoubleClick(e);
+            className="relative w-full h-full flex items-center justify-center overflow-hidden bg-black select-none touch-none"
+            onPointerDown={gestures.handlePointerDown}
+            onPointerMove={gestures.handlePointerMove}
+            onPointerUp={gestures.handlePointerUp}
+            onPointerCancel={gestures.handlePointerCancel}
+            onPointerLeave={gestures.handlePointerLeave}
+            onContextMenu={gestures.handleContextMenu}
+            style={{
+              WebkitTouchCallout: 'none',
+              userSelect: 'none',
             }}
           >
             <video
@@ -577,8 +558,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               src={source.url}
               poster={source.thumbnail || undefined}
               playsInline
-              className={`w-full h-full transition-all duration-300 ${player.settings.fitMode === 'cover' ? 'object-cover' : 'object-contain'
-                }`}
+              className={`w-full h-full transition-all duration-300 pointer-events-none ${
+                player.settings.fitMode === 'cover' ? 'object-cover' : 'object-contain'
+              }`}
             >
               {subtitleTracks.map((track) => (
                 <track
@@ -593,17 +575,45 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
             {/* Swipe Seek Indicator */}
             {gestures.isSwiping && gestures.swipeSeekTime !== null && (
-              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-30 px-5 py-3 rounded-2xl bg-black/85 border border-white/20 text-white font-mono font-bold text-base sm:text-lg backdrop-blur-md shadow-2xl flex items-center gap-2">
+              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-40 px-5 py-3 rounded-2xl bg-black/85 border border-white/20 text-white font-mono font-bold text-base sm:text-lg backdrop-blur-md shadow-2xl flex items-center gap-2 pointer-events-none select-none">
                 <span className="text-primary font-bold">Seek:</span>
-                <span>{Math.round(gestures.swipeSeekTime)}s</span>
+                <span>{formatTime(gestures.swipeSeekTime)}</span>
               </div>
             )}
 
             {/* Double-tap Seek Feedback Ripple (mobile) */}
             <SeekOverlay feedback={gestures.feedback} />
 
+            {/* Double-tap Center Play/Pause Pop Icon (YouTube style) */}
+            {gestures.centerPop && (
+              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-40 pointer-events-none animate-in zoom-in-75 fade-in duration-150">
+                <div className="w-16 h-16 rounded-full bg-black/70 backdrop-blur-md border border-white/20 flex items-center justify-center shadow-2xl text-white">
+                  {player.status === 'playing' ? (
+                    <Play className="w-8 h-8 fill-white ml-1" />
+                  ) : (
+                    <Pause className="w-8 h-8 fill-white" />
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Long-press 2x Speed Pill (YouTube style) */}
+            {gestures.isLongPressing && (
+              <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 px-3.5 py-1.5 rounded-full bg-black/85 backdrop-blur-md border border-white/20 text-white flex items-center gap-2 text-xs font-bold tracking-wide shadow-2xl animate-in fade-in zoom-in-95 pointer-events-none select-none">
+                <span>2x</span>
+                <span className="text-primary flex items-center">▶▶</span>
+              </div>
+            )}
+
+            {/* Keyboard & Action On-Screen Toast */}
+            {toastMessage && (
+              <div className="absolute top-5 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-xl bg-black/85 backdrop-blur-md border border-white/20 text-white font-mono text-xs sm:text-sm font-bold shadow-2xl pointer-events-none animate-in fade-in zoom-in-95 duration-100 select-none">
+                {toastMessage}
+              </div>
+            )}
+
             {/* Buffering Indicator — shown when controls are hidden */}
-            {player.status === 'buffering' && !controlsVisible && (
+            {player.status === 'buffering' && !controls.visible && (
               <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-20">
                 <div className="p-4 rounded-full bg-black/60 backdrop-blur-md border border-white/10 shadow-2xl">
                   <Loader2 className="w-10 h-10 text-primary animate-spin" />
@@ -615,7 +625,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             {player.resumePrompt && (
               <div
                 className="absolute top-16 left-4 right-4 sm:left-auto sm:right-6 sm:w-80 z-40 p-4 rounded-2xl bg-[#0d1017]/98 border border-white/20 shadow-2xl backdrop-blur-xl animate-in slide-in-from-top-4 duration-300 pointer-events-auto"
-                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
               >
                 <div className="flex items-center justify-between mb-1">
                   <div className="text-xs sm:text-sm font-bold text-white">
@@ -623,10 +633,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                   </div>
                   <button
                     type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      player.setResumePrompt(null);
-                    }}
+                    onClick={() => player.setResumePrompt(null)}
                     aria-label="Dismiss resume prompt"
                     className="p-1 -mr-1 rounded-lg text-white/50 hover:text-white hover:bg-white/10 active:scale-95 transition-all cursor-pointer"
                     title="Close"
@@ -640,7 +647,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 <div className="flex gap-2">
                   <button
                     type="button"
-                    onClick={(e) => { e.stopPropagation(); player.resume(); }}
+                    onClick={player.resume}
                     className="flex-1 py-2.5 px-3 rounded-xl bg-primary hover:bg-primary/90 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-lg shadow-primary/25 transition-all active:scale-95 cursor-pointer"
                   >
                     <Play className="w-3.5 h-3.5 fill-white" />
@@ -648,7 +655,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                   </button>
                   <button
                     type="button"
-                    onClick={(e) => { e.stopPropagation(); player.restart(); }}
+                    onClick={player.restart}
                     className="py-2.5 px-3 rounded-xl bg-white/10 hover:bg-white/15 text-white font-medium text-xs flex items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer"
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
@@ -662,14 +669,14 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             {player.status === 'error' && (() => {
               const errMsg = player.errorMessage || '';
               const isNetworkErr = errMsg.includes('Network') || errMsg.includes('network') || errMsg.includes('connection');
-              const isOffline = !navigator.onLine;
+              const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
               const isBlobUrl = source.url.startsWith('blob:');
               const isColabTunnel = source.url.includes('trycloudflare.com');
               const isServerUrl = source.url.startsWith('http') && !isBlobUrl;
               const showDownloadFallback = (isNetworkErr || isOffline) && isServerUrl && !isColabTunnel;
 
               return (
-                <div className="absolute inset-0 z-30 flex flex-col items-center justify-center p-6 bg-black/90 backdrop-blur-md text-center">
+                <div className="absolute inset-0 z-40 flex flex-col items-center justify-center p-6 bg-black/90 backdrop-blur-md text-center pointer-events-auto">
                   <div className="max-w-md space-y-4">
                     <div className={`w-14 h-14 mx-auto rounded-2xl ${isBlobUrl || isColabTunnel
                         ? 'bg-amber-500/10 border border-amber-500/30 text-amber-400'
@@ -701,7 +708,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                     </p>
 
                     <div className="flex flex-wrap justify-center gap-3 pt-2">
-                      {/* Hidden re-link file input for local files or expired Colab links */}
+                      {/* Hidden re-link file input */}
                       <input
                         type="file"
                         id="cg-relink-file-input"
@@ -722,7 +729,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                             } else {
                               player.videoRef.current!.src = freshUrl;
                               player.videoRef.current!.load();
-                              player.videoRef.current!.play().catch(() => { });
+                              player.videoRef.current!.play().catch(() => {});
                             }
                           }
                         }}
@@ -793,19 +800,21 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
             {/* End of Video Screen */}
             {player.status === 'ended' && (
-              <EndScreen
-                source={source}
-                nextItem={nextItem}
-                onReplay={player.restart}
-                onPlayNext={onPlayNext}
-                onBack={onClose}
-              />
+              <div className="absolute inset-0 z-40 pointer-events-auto">
+                <EndScreen
+                  source={source}
+                  nextItem={nextItem}
+                  onReplay={player.restart}
+                  onPlayNext={onPlayNext}
+                  onBack={onClose}
+                />
+              </div>
             )}
 
             {/* Controls Overlay (position: absolute relative to .player-shell) */}
             {player.status !== 'error' && player.status !== 'ended' && (
               <PlayerControls
-                visible={controlsVisible}
+                visible={controls.visible}
                 status={player.status}
                 title={source.title}
                 author={source.author}
@@ -842,23 +851,24 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 onMinimize={onMinimize}
                 onPrevious={onPlayPrevious}
                 onNext={onPlayNext}
-                onDismiss={() => {
-                  // Tapping the empty area while playing = hide controls
-                  if (player.status === 'playing') setControlsVisible(false);
-                }}
-                onUserInteraction={() => resetHideTimer(3000)}
-                onScrubStart={handleScrubStart}
-                onScrubEnd={handleScrubEnd}
+                onInteract={controls.keepAlive}
+                onPin={controls.pin}
+                onUnpin={controls.unpin}
+                onScrubStart={() => controls.pin('scrubbing')}
+                onScrubEnd={() => controls.unpin('scrubbing')}
               />
             )}
 
             {/* ── Always-visible YouTube-style thin progress bar at bottom ──
-                Visible even when controls are hidden (just like YouTube's red bar) */}
+                Visible when controls are hidden; respects safe-area-inset-bottom in fullscreen */}
             {player.status !== 'error' && player.duration > 0 && (
               <div
-                className={`absolute bottom-0 left-0 right-0 h-[3px] z-20 pointer-events-none transition-opacity duration-200 ${
-                  controlsVisible ? 'opacity-0' : 'opacity-100'
+                className={`absolute left-0 right-0 h-[3px] z-20 pointer-events-none transition-opacity duration-200 ${
+                  controls.visible ? 'opacity-0' : 'opacity-100'
                 }`}
+                style={{
+                  bottom: fullscreen.isFullscreen ? 'env(safe-area-inset-bottom, 0px)' : '0px',
+                }}
                 aria-hidden="true"
               >
                 {/* Buffer */}
@@ -885,7 +895,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             {/* Title & Channel */}
             <div className="p-4 sm:p-6 rounded-2xl bg-white/[0.02] border border-white/[0.06] backdrop-blur-sm space-y-3 sm:space-y-4">
               <div className="space-y-1.5">
-                {/* Clicking the title scrolls back to it (useful on long info pages) */}
                 <h1
                   className="font-headline font-bold text-base sm:text-xl lg:text-2xl text-white leading-snug line-clamp-2 break-words cursor-pointer hover:text-primary transition-colors"
                   title={source.title}
@@ -951,10 +960,11 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                   <button
                     type="button"
                     onClick={pip.togglePiP}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition-all active:scale-95 cursor-pointer ${pip.isPiP
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition-all active:scale-95 cursor-pointer ${
+                      pip.isPiP
                         ? 'bg-primary/20 border-primary/40 text-primary'
                         : 'bg-white/[0.04] hover:bg-white/[0.08] text-white/80 hover:text-white border-white/5'
-                      }`}
+                    }`}
                   >
                     <PictureInPicture className="w-3.5 h-3.5" />
                     <span>{pip.isPiP ? 'Exit PiP' : 'Picture-in-Picture (P)'}</span>

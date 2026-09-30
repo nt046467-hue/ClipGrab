@@ -1,27 +1,36 @@
-﻿// useKeyboardControls.ts
-// Desktop keyboard hotkeys with input-field protection
+// useKeyboardControls.ts
+// Desktop keyboard hotkeys with input-field protection & YouTube keybind parity
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
 export interface KeyboardControlHandlers {
   onTogglePlay: () => void;
-  onSeekBackward: () => void;
-  onSeekForward: () => void;
+  onSeekRelative: (seconds: number) => void;
+  onSeekToPercent: (pct: number) => void;
+  onSeekToStart: () => void;
+  onSeekToEnd: () => void;
   onVolumeUp: () => void;
   onVolumeDown: () => void;
   onToggleMute: () => void;
   onToggleFullscreen: () => void;
   onTogglePiP: () => void;
   onToggleCaptions: () => void;
+  onStepSpeed: (direction: -1 | 1) => void;
   onCloseSettings?: () => void;
+  onActivity?: () => void;
 }
 
 export function useKeyboardControls(handlers: KeyboardControlHandlers, enabled = true) {
+  const handlersRef = useRef(handlers);
+  useEffect(() => {
+    handlersRef.current = handlers;
+  }, [handlers]);
+
   useEffect(() => {
     if (!enabled || typeof window === 'undefined') return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore if user is currently interacting with an input or editable field
+      // Ignore if user is currently typing in an input or editable element
       const target = e.target as HTMLElement | null;
       if (
         target &&
@@ -32,58 +41,132 @@ export function useKeyboardControls(handlers: KeyboardControlHandlers, enabled =
         return;
       }
 
+      const h = handlersRef.current;
+
       switch (e.key) {
         case ' ':
         case 'k':
         case 'K':
           e.preventDefault();
-          handlers.onTogglePlay();
+          h.onActivity?.();
+          h.onTogglePlay();
           break;
-        case 'ArrowLeft':
+
         case 'j':
         case 'J':
           e.preventDefault();
-          handlers.onSeekBackward();
+          h.onActivity?.();
+          h.onSeekRelative(-10);
           break;
-        case 'ArrowRight':
+
         case 'l':
         case 'L':
           e.preventDefault();
-          handlers.onSeekForward();
+          h.onActivity?.();
+          h.onSeekRelative(10);
           break;
+
+        case 'ArrowLeft':
+          e.preventDefault();
+          h.onActivity?.();
+          h.onSeekRelative(-5);
+          break;
+
+        case 'ArrowRight':
+          e.preventDefault();
+          h.onActivity?.();
+          h.onSeekRelative(5);
+          break;
+
         case 'ArrowUp':
           e.preventDefault();
-          handlers.onVolumeUp();
+          h.onActivity?.();
+          h.onVolumeUp();
           break;
+
         case 'ArrowDown':
           e.preventDefault();
-          handlers.onVolumeDown();
+          h.onActivity?.();
+          h.onVolumeDown();
           break;
+
         case 'm':
         case 'M':
           e.preventDefault();
-          handlers.onToggleMute();
+          h.onActivity?.();
+          h.onToggleMute();
           break;
+
         case 'f':
         case 'F':
           e.preventDefault();
-          handlers.onToggleFullscreen();
+          h.onActivity?.();
+          h.onToggleFullscreen();
           break;
+
         case 'p':
         case 'P':
           e.preventDefault();
-          handlers.onTogglePiP();
+          h.onActivity?.();
+          h.onTogglePiP();
           break;
+
         case 'c':
         case 'C':
           e.preventDefault();
-          handlers.onToggleCaptions();
+          h.onActivity?.();
+          h.onToggleCaptions();
           break;
+
+        case '0':
+        case '1':
+        case '2':
+        case '3':
+        case '4':
+        case '5':
+        case '6':
+        case '7':
+        case '8':
+        case '9': {
+          e.preventDefault();
+          h.onActivity?.();
+          const pct = parseInt(e.key, 10) * 0.1;
+          h.onSeekToPercent(pct);
+          break;
+        }
+
+        case '<':
+        case ',':
+          e.preventDefault();
+          h.onActivity?.();
+          h.onStepSpeed(-1);
+          break;
+
+        case '>':
+        case '.':
+          e.preventDefault();
+          h.onActivity?.();
+          h.onStepSpeed(1);
+          break;
+
+        case 'Home':
+          e.preventDefault();
+          h.onActivity?.();
+          h.onSeekToStart();
+          break;
+
+        case 'End':
+          e.preventDefault();
+          h.onActivity?.();
+          h.onSeekToEnd();
+          break;
+
         case 'Escape':
-          if (handlers.onCloseSettings) {
-            handlers.onCloseSettings();
+          if (h.onCloseSettings) {
+            h.onCloseSettings();
           }
           break;
+
         default:
           break;
       }
@@ -91,5 +174,5 @@ export function useKeyboardControls(handlers: KeyboardControlHandlers, enabled =
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handlers, enabled]);
+  }, [enabled]);
 }
