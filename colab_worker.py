@@ -335,7 +335,7 @@ async def resolve_media(req: ResolveRequest):
 
                     if video_bytes > 0 and dur > 0:
                         implied_br = (video_bytes * 8) / (dur * 1000)
-                        if implied_br > tier["max_reasonable"]:
+                        if implied_br > tier["max_br"]:
                             video_bytes = round((tier["target_br"] * 1000 * dur) / 8)
 
                     v_src_bytes = video_bytes if video_bytes > 0 else None
@@ -489,8 +489,12 @@ def download_task(job_id: str, url: str, format_id: str, media_type: str, title:
             total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
             downloaded = d.get('downloaded_bytes', 0)
             if total > 0:
-                percent = (downloaded / total) * 90
-                job["progress"] = round(max(5, min(92, percent)))
+                # Show real percentage — reserve 95-96% for post-processing
+                percent = (downloaded / total) * 95
+                job["progress"] = round(max(5, min(95, percent)))
+            elif d.get('fragment_count') and d.get('fragment_index'):
+                frag_percent = (d['fragment_index'] / d['fragment_count']) * 90
+                job["progress"] = round(max(5, min(95, 5 + frag_percent)))
         elif d['status'] == 'finished':
             job["progress"] = 96
 
@@ -500,7 +504,17 @@ def download_task(job_id: str, url: str, format_id: str, media_type: str, title:
         'no_warnings': True,
         'progress_hooks': [progress_hook],
         'format_sort': ['vcodec:h264', 'acodec:m4a', 'ext:mp4', 'res', 'br'],
+        'concurrent_fragment_downloads': 10,
+        'buffersize': 1024 * 1024 * 16,
+        'http_chunk_size': 10485760,
+        'retries': 10,
+        'fragment_retries': 10,
     }
+
+    import shutil
+    if shutil.which('aria2c'):
+        ydl_opts['external_downloader'] = {'default': 'aria2c'}
+        ydl_opts['external_downloader_args'] = {'default': ['-s', '16', '-x', '16', '-k', '1M', '--min-split-size=1M']}
 
     cookie_file = Path("./cookies.txt")
     if cookie_file.exists() and cookie_file.stat().st_size > 0:
@@ -579,16 +593,30 @@ def download_task(job_id: str, url: str, format_id: str, media_type: str, title:
         # Use clean video title as the download filename (not the UUID)
         dl_ext = final_file.suffix or '.mp4'
         clean_filename = f"{clean_t}{dl_ext}"
+
+        # Read the REAL file size from disk — never use an estimate
+        actual_bytes = final_file.stat().st_size
+        actual_size_str = format_bytes_py(actual_bytes, is_approx=False)
+
         job["status"] = "completed"
         job["progress"] = 100
         job["result"] = {
             "filename": clean_filename,
-            "downloadUrl": f"/api/files/{final_file.name}"
+            "downloadUrl": f"/api/files/{final_file.name}",
+            "size": actual_size_str,
+            "sizeBytes": actual_bytes,
+            "mimeType": (
+                "audio/mpeg" if dl_ext == ".mp3"
+                else "video/x-matroska" if dl_ext == ".mkv"
+                else "video/mp4"
+            ),
         }
+        print(f"[Download Complete] {clean_filename} — {actual_size_str} ({actual_bytes} bytes)")
     except Exception as e:
         print(f"Download failed: {e}")
         job["status"] = "failed"
         job["error"] = str(e)
+
 
 @app.post("/api/download")
 async def start_download(req: DownloadRequest, background_tasks: BackgroundTasks):
@@ -698,8 +726,14 @@ async def proxy_thumbnail(url: str = Query(...)):
 # Automatic launcher for Google Colab
 def run_in_colab():
     import threading
-    from pycloudflared import try_cloudflare
+    import subprocess
     import uvicorn
+
+    try:
+        import nest_asyncio
+        nest_asyncio.apply()
+    except Exception:
+        pass
 
     print("\n" + "="*60)
     print("🚀 STARTING CLIPGRAB COLAB WORKER...")
@@ -710,37 +744,53 @@ def run_in_colab():
     os.system("pkill -9 -f cloudflared > /dev/null 2>&1 || true")
     time.sleep(1)
 
-    # Start FastAPI server in background thread on port 8000
-    config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="warning")
+    # Start FastAPI server in background thread with install_signal_handlers=False to prevent main-thread signal crash
+    config = uvicorn.Config(
+        app,
+        host="127.0.0.1",
+        port=8000,
+        log_level="warning",
+        loop="asyncio",
+        install_signal_handlers=False
+    )
     server = uvicorn.Server(config)
     server_thread = threading.Thread(target=server.run, daemon=True)
     server_thread.start()
     time.sleep(2)
 
-    # Launch Cloudflare tunnel for free public HTTPS URL
-    try:
-        tunnel = try_cloudflare(port=8000)
-        public_url = getattr(tunnel, 'tunnel', getattr(tunnel, 'url', getattr(tunnel, 'tunnel_url', str(tunnel))))
-        print("\n" + "✨"*30)
-        print(f"🎉 YOUR CLIPGRAB COLAB BACKEND URL:")
-        print(f"👉  {public_url}  👈")
-        print("✨"*30)
-        print("\nCopy the URL above and paste it into ClipGrab 'Server Settings / Colab' modal!")
-        print("Keep this Colab tab open while downloading.\n")
-    except Exception as e:
-        print(f"Cloudflare tunnel launch note: {e}")
-        print("If cloudflare fails, install and use ngrok: ngrok.connect(8000)")
+    # Launch Cloudflare tunnel using official binary or pycloudflared
+    tunnel_url = None
+    if shutil.which("cloudflared"):
+        proc = subprocess.Popen(
+            ["cloudflared", "tunnel", "--url", "http://127.0.0.1:8000"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        for line in proc.stderr:
+            m = re.search(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com', line)
+            if m:
+                tunnel_url = m.group(0)
+                break
+    else:
+        print("[Notice] 'cloudflared' binary not found. Please install it using:")
+        print("!wget -q -nc https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb && dpkg -i cloudflared-linux-amd64.deb")
 
-    # Keep alive loop
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("Server stopped.")
+    if tunnel_url:
+        print("\n" + "✨"*30)
+        print("🎉 YOUR CLIPGRAB COLAB BACKEND URL:")
+        print(f"👉  {tunnel_url}  👈")
+        print("✨"*30)
+        print("\n✅ Server is running safely in background!")
+        print("Copy the URL above and paste it into ClipGrab Server Settings / Colab modal.\n")
+    else:
+        print("\n⚠️ Cloudflare URL could not be detected. Run:")
+        print("!wget -q -nc https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb && dpkg -i cloudflared-linux-amd64.deb")
 
 if __name__ == "__main__":
-    if "google.colab" in sys.modules or os.environ.get("COLAB_GPU"):
+    if "google.colab" in sys.modules or os.environ.get("COLAB_GPU") or os.environ.get("COLAB_RELEASE_TAG"):
         run_in_colab()
     else:
         import uvicorn
         uvicorn.run(app, host="0.0.0.0", port=8080)
+

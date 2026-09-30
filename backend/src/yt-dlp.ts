@@ -757,16 +757,17 @@ export async function downloadVideo(
       }
     }
 
+    // Always output MP4 for browser compatibility.
+    // If streams are VP9/AV1 (not natively supported in MP4 container without re-encode),
+    // we re-encode to H.264+AAC so the result plays in Chrome/Safari/Firefox.
+    // This keeps file sizes reasonable via CRF 23 (visually lossless for most content).
     let mergeFormat = 'mp4';
     if (isVp9OrAv1) {
-      if (explicitMp4) {
-        // Last-resort fallback: re-encode to mp4 when streams are VP9/AV1 and user explicitly requested mp4
-        mergeFormat = 'mp4';
-        postProcessorArgs.push('--postprocessor-args', 'ffmpeg:-c:v libx264 -c:a aac -pix_fmt yuv420p -movflags +faststart');
-      } else {
-        mergeFormat = 'mkv';
-        postProcessorArgs.push('--postprocessor-args', 'ffmpeg:-c copy');
-      }
+      mergeFormat = 'mp4';
+      postProcessorArgs.push(
+        '--postprocessor-args',
+        'ffmpeg:-c:v libx264 -crf 23 -preset fast -c:a aac -b:a 128k -pix_fmt yuv420p -movflags +faststart'
+      );
     } else {
       mergeFormat = 'mp4';
       postProcessorArgs.push('--postprocessor-args', 'ffmpeg:-c copy -movflags +faststart');
@@ -863,7 +864,8 @@ function spawnDownload(ytDlpPath: string, args: string[], onProgress: (pct: numb
       if (matches.length > 0) {
         const lastMatch = matches[matches.length - 1];
         const pct = parseFloat(lastMatch[1]);
-        const scaledPct = Math.min(90, Math.max(1, pct * 0.9));
+        // Show real yt-dlp progress up to 92% — reserve 93-96% for merge/processing
+        const scaledPct = Math.min(92, Math.max(1, pct));
         onProgress(scaledPct, 'downloading');
       }
     };

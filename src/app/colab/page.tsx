@@ -43,7 +43,10 @@ import {
   CheckCheck
 } from "lucide-react"
 
-const FULL_COLAB_SCRIPT = `!pip install -q fastapi uvicorn yt-dlp pycloudflared pydantic
+const FULL_COLAB_SCRIPT = `!apt-get install -y -qq aria2
+!wget -q -nc https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+!dpkg -i cloudflared-linux-amd64.deb > /dev/null 2>&1
+!pip install -q fastapi uvicorn yt-dlp pydantic nest-asyncio
 
 import os, re, sys, time, uuid, json, asyncio, threading, subprocess, urllib.parse
 from pathlib import Path
@@ -53,8 +56,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 import yt_dlp
-from pycloudflared import try_cloudflare
 import uvicorn
+import nest_asyncio
+
+try:
+    nest_asyncio.apply()
+except Exception:
+    pass
 
 app = FastAPI(title="ClipGrab Colab Engine")
 
@@ -337,13 +345,42 @@ os.system("fuser -k 8000/tcp > /dev/null 2>&1 || true")
 os.system("pkill -9 -f cloudflared > /dev/null 2>&1 || true")
 time.sleep(1)
 
-# Run server + tunnel
-threading.Thread(target=lambda: uvicorn.run(app, host="0.0.0.0", port=8000, log_level="warning"), daemon=True).start()
+# Start FastAPI server in background thread with install_signal_handlers=False
+config = uvicorn.Config(
+    app,
+    host="127.0.0.1",
+    port=8000,
+    log_level="warning",
+    loop="asyncio",
+    install_signal_handlers=False
+)
+server = uvicorn.Server(config)
+threading.Thread(target=server.run, daemon=True).start()
 time.sleep(2)
-tunnel = try_cloudflare(port=8000)
-print("\\n" + "="*50)
-print(f"🎉 YOUR CLIPGRAB COLAB URL:\\n👉 {tunnel.tunnel} 👈")
-print("="*50 + "\\nCopy this URL into ClipGrab Server Settings!\\n")
+
+# Start Cloudflare Tunnel process and grab public URL
+proc = subprocess.Popen(
+    ["cloudflared", "tunnel", "--url", "http://127.0.0.1:8000"],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    text=True
+)
+
+found = False
+for line in proc.stderr:
+    m = re.search(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com', line)
+    if m:
+        tunnel_url = m.group(0)
+        print("\\n" + "="*55)
+        print(f"🎉 YOUR CLIPGRAB COLAB URL:\\n👉  {tunnel_url}  👈")
+        print("="*55)
+        print("\\n✅ Server is running safely in background!")
+        print("Copy this URL into ClipGrab Server Settings!\\n")
+        found = True
+        break
+
+if not found:
+    print("Could not find trycloudflare URL. Check if cloudflared installed properly.")
 `
 
 export default function ColabGuidePage() {

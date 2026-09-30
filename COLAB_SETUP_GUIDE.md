@@ -17,10 +17,13 @@ If Render free-tier is taking too long (cold starts or CPU limits), you can run 
 Paste the following Python code into a cell in your Colab notebook and click **Run** (▶️):
 
 ```python
-# Install dependencies
-!pip install -q fastapi uvicorn yt-dlp pycloudflared pydantic
+# Install dependencies, official cloudflared binary & multi-threaded acceleration engine
+!apt-get install -y -qq aria2
+!wget -q -nc https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+!dpkg -i cloudflared-linux-amd64.deb > /dev/null 2>&1
+!pip install -q fastapi uvicorn yt-dlp pydantic nest-asyncio
 
-import os, re, sys, time, uuid, json, asyncio, threading
+import os, re, sys, time, uuid, json, asyncio, threading, subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
@@ -168,13 +171,20 @@ def do_download(job_id, url, format_id, mtype, title):
             tot = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
             if tot > 0:
                 jobs[job_id]["progress"] = round(min(95, max(15, (d.get('downloaded_bytes', 0)/tot)*90)))
+            elif d.get('fragment_count') and d.get('fragment_index'):
+                frag_pct = (d['fragment_index'] / d['fragment_count']) * 85
+                jobs[job_id]["progress"] = round(min(95, max(15, 15 + frag_pct)))
+        elif d['status'] == 'finished':
+            jobs[job_id]["progress"] = 95
     
     opts = {
         'outtmpl': out,
         'quiet': True,
         'no_warnings': True,
         'progress_hooks': [hook],
-        'concurrent_fragment_downloads': 8,
+        'concurrent_fragment_downloads': 10,
+        'buffersize': 1024 * 1024 * 16,
+        'http_chunk_size': 10485760,
         'postprocessor_args': {'ffmpeg': ['-threads', '0']},
     }
     if mtype == "audio":
@@ -221,15 +231,54 @@ def get_stat(jid: str):
 def get_file(name: str):
     return FileResponse(TEMP_DIR / name, filename=name)
 
-# Start background server
-threading.Thread(target=lambda: uvicorn.run(app, host="0.0.0.0", port=8000), daemon=True).start()
+# ── Launch Background Server & Cloudflare Tunnel safely (no kernel crashes) ──
+import nest_asyncio
+try:
+    nest_asyncio.apply()
+except Exception:
+    pass
+
+# Clean up existing processes on port 8000
+os.system("fuser -k 8000/tcp > /dev/null 2>&1 || true")
+os.system("pkill -9 -f cloudflared > /dev/null 2>&1 || true")
+time.sleep(1)
+
+# Start Uvicorn without signal handlers in background daemon thread
+config = uvicorn.Config(
+    app,
+    host="127.0.0.1",
+    port=8000,
+    log_level="warning",
+    loop="asyncio",
+    install_signal_handlers=False
+)
+server = uvicorn.Server(config)
+threading.Thread(target=server.run, daemon=True).start()
 time.sleep(2)
 
-# Launch Cloudflare Tunnel
-tunnel = try_cloudflare(port=8000)
-print("\n" + "="*50)
-print(f"🎉 YOUR CLIPGRAB COLAB URL:\n👉 {tunnel.tunnel} 👈")
-print("="*50 + "\nCopy this URL into ClipGrab Server Settings!\n")
+# Start Cloudflare Tunnel process and grab public URL
+proc = subprocess.Popen(
+    ["cloudflared", "tunnel", "--url", "http://127.0.0.1:8000"],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    text=True
+)
+
+found = False
+for line in proc.stderr:
+    m = re.search(r'https://[a-zA-Z0-9-]+\.trycloudflare\.com', line)
+    if m:
+        tunnel_url = m.group(0)
+        print("\n" + "="*55)
+        print(f"🎉 YOUR CLIPGRAB COLAB URL:\n👉  {tunnel_url}  👈")
+        print("="*55)
+        print("\n✅ Server is running safely in the background!")
+        print("Copy this URL into ClipGrab Server Settings!\n")
+        found = True
+        break
+
+if not found:
+    print("Could not find trycloudflare URL. Check if cloudflared installed properly.")
 ```
 
 ---

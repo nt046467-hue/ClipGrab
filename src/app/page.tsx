@@ -43,6 +43,12 @@ import {
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { ChatAssistant } from "@/components/ChatAssistant"
+import { VideoPlayer } from "@/components/player/VideoPlayer"
+import { MiniPlayer } from "@/components/player/MiniPlayer"
+import { DownloadedLibrary } from "@/components/player/DownloadedLibrary"
+import { VideoSource } from "@/hooks/useVideoPlayer"
+import { generateVideoId, upsertWatchHistory, getWatchHistory, WatchHistoryEntry } from "@/lib/player-storage"
+import { formatRemainingTime, formatTime } from "@/lib/format-utils"
 
 interface VideoFormat {
   id: string
@@ -130,7 +136,28 @@ export default function Home() {
   const [isColab, setIsColab] = useState(isCustomApiUrlActive())
   const [previewError, setPreviewError] = useState(false)
   const [directUrlFailed, setDirectUrlFailed] = useState(false)
+  const [activePlayerSource, setActivePlayerSource] = useState<VideoSource | null>(null)
+  const [isMiniPlayer, setIsMiniPlayer] = useState(false)
+  const [isMiniPlaying, setIsMiniPlaying] = useState(false)
+  const [libraryOpen, setLibraryOpen] = useState(false)
+  const [recentHistory, setRecentHistory] = useState<WatchHistoryEntry[]>([])
   const { toast } = useToast()
+
+  useEffect(() => {
+    setRecentHistory(getWatchHistory())
+    const handleOpenLib = () => setLibraryOpen(true)
+    window.addEventListener("clipgrab_open_library", handleOpenLib)
+    return () => window.removeEventListener("clipgrab_open_library", handleOpenLib)
+  }, [])
+
+  const handleOpenPlayer = (source: VideoSource) => {
+    setActivePlayerSource(source)
+    setIsMiniPlayer(false)
+    setIsMiniPlaying(true)
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'instant' })
+    }
+  }
 
   // Auto-connect if loaded with ?engine=... URL parameter (from mobile QR scan or shared link)
   useEffect(() => {
@@ -303,6 +330,30 @@ export default function Home() {
         if (data.status === 'completed') {
           clearInterval(interval)
 
+          // Save completed download to local history for player
+          try {
+            const rawUrl = data.result.downloadUrl
+            const downloadLink = rawUrl.startsWith('http') ? rawUrl : `${serverUrl}${rawUrl}`
+            const vId = generateVideoId(downloadLink, metadata?.title || data.result.filename)
+            upsertWatchHistory({
+              id: vId,
+              title: metadata?.title || data.result.filename,
+              thumbnail: metadata?.thumbnail || '',
+              duration: 0,
+              lastPosition: 0,
+              lastWatched: Date.now(),
+              completionPct: 0,
+              fileUrl: downloadLink,
+              fileSize: data.result.size,
+              quality: downloadingJob?.formatQuality,
+              author: metadata?.author,
+              platform: metadata?.platform,
+            })
+            setRecentHistory(getWatchHistory())
+          } catch (e) {
+            console.error("Failed to record watch history:", e)
+          }
+
           // Auto trigger file save
           try {
             const rawUrl = data.result.downloadUrl
@@ -435,14 +486,16 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-background text-foreground relative overflow-hidden selection:bg-primary selection:text-white">
+    <div className="min-h-screen flex flex-col bg-background text-foreground relative overflow-x-clip selection:bg-primary selection:text-white">
       {/* Dynamic ambient background glow */}
       <div className="absolute top-[-15%] left-[-10%] w-[55%] h-[60%] rounded-full bg-primary/15 blur-[160px] pointer-events-none" />
       <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[60%] rounded-full bg-indigo-500/10 blur-[180px] pointer-events-none" />
 
-      <Navbar />
+      {/* Downloader Page Content — hidden when active video is shown in the main document flow */}
+      <div className={activePlayerSource && !isMiniPlayer ? 'hidden' : 'contents'}>
+        <Navbar />
 
-      <main className={`flex-grow pt-24 sm:pt-36 px-3.5 sm:px-6 relative z-10 transition-all duration-300 ${metadata && !downloadingJob ? 'pb-28 sm:pb-20' : 'pb-20'}`}>
+        <main className={`flex-grow pt-[calc(4.25rem+env(safe-area-inset-top,0px))] sm:pt-36 px-3.5 sm:px-6 relative z-10 transition-all duration-300 ${metadata && !downloadingJob ? 'pb-28 sm:pb-20' : 'pb-20'}`}>
         <div className="max-w-5xl mx-auto space-y-8 sm:space-y-12">
 
           {/* Hero Section */}
@@ -639,7 +692,7 @@ export default function Home() {
             </div>
           )}
 
-          {/* Skeleton Preloader State */}
+          {/* Skeleton Preloader State — shown at top while resolving URL */}
           {isLoading && !metadata && (
             <div className="animate-in fade-in duration-300 max-w-5xl mx-auto">
               <Card className="bg-brand-surface/40 border border-brand-border/40 overflow-hidden shadow-2xl backdrop-blur-xl rounded-[1.8rem] sm:rounded-[2.5rem]">
@@ -667,6 +720,81 @@ export default function Home() {
               </Card>
             </div>
           )}
+
+          {/* Continue Watching Shelf — visible during idle AND while loading (shown below skeleton) */}
+          {recentHistory.some((h) => h.completionPct > 5 && h.completionPct < 95) && !metadata && !downloadingJob && (
+            <div className="max-w-3xl mx-auto space-y-3 pt-2 animate-in fade-in duration-300">
+              <div className="flex items-center justify-between px-1">
+                <div className="flex items-center gap-2 text-white font-bold text-sm">
+                  <Play className="w-4 h-4 text-primary fill-primary" />
+                  <span>Continue Watching</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setLibraryOpen(true)}
+                  className="text-xs text-primary hover:underline font-semibold"
+                >
+                  View Library →
+                </button>
+              </div>
+
+              <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-thin">
+                {recentHistory
+                  .filter((h) => h.completionPct > 5 && h.completionPct < 95)
+                  .slice(0, 4)
+                  .map((item) => (
+                    <div
+                      key={item.id}
+                      onClick={() =>
+                        handleOpenPlayer({
+                          id: item.id,
+                          url: item.fileUrl,
+                          title: item.title,
+                          thumbnail: item.thumbnail,
+                          duration: item.duration,
+                          author: item.author,
+                          mimeType: item.mimeType,
+                          quality: item.quality,
+                          fileSize: item.fileSize,
+                          platform: item.platform,
+                        })
+                      }
+                      className="w-56 shrink-0 rounded-2xl bg-[#0d1017] border border-white/10 hover:border-primary/50 overflow-hidden cursor-pointer group transition-all duration-200 shadow-xl"
+                    >
+                      <div className="relative aspect-video bg-black overflow-hidden">
+                        {item.thumbnail ? (
+                          /* eslint-disable-next-line @next/next/no-img-element */
+                          <img
+                            src={item.thumbnail}
+                            alt=""
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-white/30">
+                            <Film className="w-6 h-6" />
+                          </div>
+                        )}
+                        <span className="absolute bottom-1.5 right-1.5 bg-black/85 text-[9px] font-mono font-bold px-1.5 py-0.5 rounded text-white border border-white/15">
+                          {formatRemainingTime(item.lastPosition, item.duration)}
+                        </span>
+                        <div className="absolute bottom-0 left-0 right-0 h-1 bg-white/20">
+                          <div className="h-full bg-primary" style={{ width: `${item.completionPct}%` }} />
+                        </div>
+                      </div>
+                      <div className="p-2.5">
+                        <p className="font-headline font-bold text-xs text-white truncate group-hover:text-primary transition-colors">
+                          {item.title}
+                        </p>
+                        <p className="text-[10px] text-white/40 mt-0.5">
+                          Resume at {formatTime(item.lastPosition)}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
+
 
           {/* Authentic Media Studio Card (Results & Format Selection) with Continuous Tracing Meteor Border */}
           {metadata && !downloadingJob && (
@@ -1106,9 +1234,34 @@ export default function Home() {
                   <div className="flex flex-col gap-3 pt-2">
                     {downloadingJob.status === 'completed' && downloadingJob.result && (
                       <>
+                        {/* Primary Action: Open in ClipGrab Player */}
+                        <Button
+                          type="button"
+                          onClick={() => {
+                            const rawUrl = downloadingJob.result!.downloadUrl
+                            const downloadLink = rawUrl.startsWith('http') ? rawUrl : `${getStoredApiUrl()}${rawUrl}`
+                            handleOpenPlayer({
+                              id: generateVideoId(downloadLink, metadata?.title || downloadingJob.result!.filename),
+                              url: downloadLink,
+                              title: metadata?.title || downloadingJob.result!.filename,
+                              thumbnail: metadata?.thumbnail || '',
+                              duration: 0,
+                              author: metadata?.author,
+                              quality: downloadingJob.formatQuality,
+                              fileSize: downloadingJob.result!.size,
+                              platform: metadata?.platform,
+                            })
+                          }}
+                          className="w-full h-14 bg-gradient-to-r from-primary via-indigo-600 to-accent hover:from-primary/95 hover:to-indigo-500 text-white font-bold rounded-2xl shadow-xl shadow-primary/30 gap-2.5 text-base active:scale-[0.99] transition-transform"
+                        >
+                          <Play className="w-5 h-5 fill-white" />
+                          <span>Open in ClipGrab Player</span>
+                        </Button>
+
                         <Button
                           asChild
-                          className="w-full h-14 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-bold rounded-2xl shadow-xl shadow-emerald-500/25 gap-2 text-base active:scale-[0.99] transition-transform"
+                          variant="outline"
+                          className="w-full h-12 bg-white/[0.04] hover:bg-white/10 text-white font-semibold rounded-xl border border-white/10 gap-2 text-sm active:scale-[0.99] transition-transform"
                         >
                           <a
                             href={downloadingJob.result.downloadUrl.startsWith('http') ? downloadingJob.result.downloadUrl : `${getStoredApiUrl()}${downloadingJob.result.downloadUrl}`}
@@ -1116,7 +1269,7 @@ export default function Home() {
                             target="_blank"
                             rel="noopener noreferrer"
                           >
-                            <Download className="w-5 h-5" />
+                            <Download className="w-4 h-4" />
                             Save File ({downloadingJob.result.size || 'Download'})
                           </a>
                         </Button>
@@ -1195,6 +1348,10 @@ export default function Home() {
         </div>
       )}
 
+        <Footer />
+        {!activePlayerSource && !libraryOpen && <ChatAssistant hasStickyBar={!!metadata && !downloadingJob} />}
+      </div>
+
       {/* Backend / Colab Settings Modal */}
       <ServerSettingsModal
         open={settingsOpen}
@@ -1209,8 +1366,52 @@ export default function Home() {
         isColab={isColab}
       />
 
-      <Footer />
-      <ChatAssistant hasStickyBar={!!metadata && !downloadingJob} />
+      {/* VideoPlayer — always mounted when there is an active source so the <video>
+          element stays alive for uninterrupted background audio & Picture-in-Picture.
+          isMiniMode=true renders only a hidden <video> (no UI) when minimised. */}
+      {activePlayerSource && (
+        <>
+          <VideoPlayer
+            source={activePlayerSource}
+            isMiniMode={isMiniPlayer}
+            onMiniStatusChange={(playing) => setIsMiniPlaying(playing)}
+            onClose={() => {
+              setActivePlayerSource(null)
+              setIsMiniPlayer(false)
+              setRecentHistory(getWatchHistory())
+            }}
+            onMinimize={() => setIsMiniPlayer(true)}
+            onSwitchVideo={(src) => handleOpenPlayer(src)}
+          />
+
+          {/* Floating Mini Player bar — shown on top when minimised */}
+          {isMiniPlayer && (
+            <MiniPlayer
+              source={activePlayerSource}
+              isPlaying={isMiniPlaying}
+              onTogglePlay={() => {
+                // Dispatch a custom event that VideoPlayer's hidden video listens to
+                window.dispatchEvent(new CustomEvent('clipgrab_mini_toggle_play'))
+              }}
+              onExpand={() => setIsMiniPlayer(false)}
+              onClose={() => {
+                setActivePlayerSource(null)
+                setIsMiniPlayer(false)
+              }}
+            />
+          )}
+        </>
+      )}
+
+      {/* Downloads & Watch History Library Modal */}
+      <DownloadedLibrary
+        isOpen={libraryOpen}
+        onClose={() => {
+          setLibraryOpen(false)
+          setRecentHistory(getWatchHistory())
+        }}
+        onPlayVideo={handleOpenPlayer}
+      />
     </div>
   )
 }
