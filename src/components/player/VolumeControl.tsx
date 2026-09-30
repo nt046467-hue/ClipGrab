@@ -1,5 +1,5 @@
 // VolumeControl.tsx
-// Responsive volume control with dynamic SVG volume icons and desktop-only slider (hidden on touch devices)
+// Responsive volume control with dynamic SVG icons, 40x40px touch target, and stopPropagation auto-hide restart
 
 import React from 'react';
 import { Volume2, Volume1, VolumeX } from 'lucide-react';
@@ -12,7 +12,7 @@ interface VolumeControlProps {
   onInteract?: () => void;
 }
 
-export const VolumeControl: React.FC<VolumeControlProps> = ({
+export const VolumeControl: React.FC<VolumeControlProps> = React.memo(({
   volume,
   muted,
   onVolumeChange,
@@ -35,17 +35,24 @@ export const VolumeControl: React.FC<VolumeControlProps> = ({
     <div className="flex items-center gap-1.5 group/vol pointer-events-auto">
       <button
         type="button"
-        onClick={() => {
+        onClick={(e) => {
+          e.stopPropagation();
           onToggleMute();
           onInteract?.();
+          try {
+            (e.currentTarget as HTMLElement).blur();
+          } catch {}
+        }}
+        onPointerDown={(e) => {
+          e.stopPropagation();
         }}
         aria-label={muted ? 'Unmute' : 'Mute'}
-        className="p-1.5 sm:p-2 rounded-xl text-white/80 hover:text-white hover:bg-white/10 active:scale-95 transition-all cursor-pointer"
+        className="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-xl text-white/80 hover:text-white hover:bg-white/10 active:scale-95 transition-all cursor-pointer"
       >
         {renderIcon()}
       </button>
 
-      {/* Expandable slider only on desktop devices with hover capability; hidden on touch devices */}
+      {/* Expandable slider only on desktop with hover & fine pointer; hidden on touch */}
       <div className="hidden [@media(hover:hover)_and_(pointer:fine)]:flex w-0 group-hover/vol:w-16 sm:group-hover/vol:w-20 transition-all duration-300 overflow-hidden items-center">
         <input
           type="range"
@@ -54,13 +61,17 @@ export const VolumeControl: React.FC<VolumeControlProps> = ({
           step={0.05}
           value={currentLevel}
           onChange={(e) => {
+            e.stopPropagation();
             onVolumeChange(parseFloat(e.target.value));
             onInteract?.();
           }}
+          onPointerDown={(e) => e.stopPropagation()}
           aria-label="Volume slider"
           className="w-16 sm:w-20 h-1 bg-white/25 rounded-lg appearance-none cursor-pointer accent-primary focus:outline-none"
         />
       </div>
     </div>
   );
-};
+});
+
+VolumeControl.displayName = 'VolumeControl';

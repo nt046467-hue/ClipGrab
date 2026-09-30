@@ -1,10 +1,11 @@
 // usePlayerGestures.ts
 // Production-grade YouTube mobile player gesture system with Pointer Events
 // Supports: instant tap reveal / 250ms hide on visible, left/right double-tap seek,
-// center double-tap play/pause, long-press 2x speed, horizontal swipe seek,
-// windowed follow-the-finger vertical swipe (minimize/fullscreen), and desktop mouse handling.
+// center double-tap play/pause, long-press 2x speed (applied directly on video element & guarded against ratechange),
+// horizontal swipe seek, windowed follow-the-finger vertical swipe (minimize/fullscreen), and desktop mouse handling.
 
-import { useState, useRef, useCallback, PointerEvent, MouseEvent, useEffect } from 'react';
+import { useState, useRef, useCallback, PointerEvent, MouseEvent, useEffect, RefObject } from 'react';
+import { PlayerStatus } from './useVideoPlayer';
 
 export interface GestureFeedback {
   type: 'rewind' | 'forward' | null;
@@ -17,12 +18,13 @@ export interface UsePlayerGesturesProps {
   duration: number;
   currentTime: number;
   isFullscreen: boolean;
+  playerStatus: PlayerStatus;
+  videoRef: RefObject<HTMLVideoElement | null>;
   onSeek: (targetTime: number) => void;
   onSeekRelative: (seconds: number) => void;
   onTogglePlay: () => void;
   onToggleFullscreen?: () => void;
   onMinimize?: () => void;
-  onTemporarySpeedChange: (speed: number | null) => void;
   controlsVisibleRef: React.MutableRefObject<boolean>;
   showControls: (autoHide?: boolean) => void;
   hideControls: () => void;
@@ -36,12 +38,13 @@ export function usePlayerGestures({
   duration,
   currentTime,
   isFullscreen,
+  playerStatus,
+  videoRef,
   onSeek,
   onSeekRelative,
   onTogglePlay,
   onToggleFullscreen,
   onMinimize,
-  onTemporarySpeedChange,
   controlsVisibleRef,
   showControls,
   hideControls,
@@ -61,7 +64,10 @@ export function usePlayerGestures({
   const [swipeSeekTime, setSwipeSeekTime] = useState<number | null>(null);
 
   // Long press 2x state
-  const [isLongPressing, setIsLongPressing] = useState(false);
+  const [isSpeeding, setIsSpeeding] = useState(false);
+  const isSpeedingRef = useRef<boolean>(false);
+  const savedPlaybackRateRef = useRef<number>(1);
+  const longPressedRef = useRef<boolean>(false);
 
   // Windowed vertical drag translation (px) for follow-the-finger feedback
   const [dragTranslateY, setDragTranslateY] = useState<number>(0);
@@ -81,7 +87,6 @@ export function usePlayerGestures({
 
   // Long press timer ref
   const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const isLongPressingRef = useRef<boolean>(false);
 
   // Desktop mouse click handling refs
   const lastMouseClickRef = useRef<{ time: number; x: number; y: number } | null>(null);
@@ -101,6 +106,28 @@ export function usePlayerGestures({
   } | null>(null);
 
   const gestureModeRef = useRef<'none' | 'horizontal_swipe' | 'vertical_swipe'>('none');
+
+  // Re-apply 2x speed on ratechange / play / seeked events while long-press is active
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const enforceSpeed = () => {
+      if (isSpeedingRef.current && video.playbackRate !== 2) {
+        video.playbackRate = 2;
+      }
+    };
+
+    video.addEventListener('ratechange', enforceSpeed);
+    video.addEventListener('play', enforceSpeed);
+    video.addEventListener('seeked', enforceSpeed);
+
+    return () => {
+      video.removeEventListener('ratechange', enforceSpeed);
+      video.removeEventListener('play', enforceSpeed);
+      video.removeEventListener('seeked', enforceSpeed);
+    };
+  }, [videoRef]);
 
   // Trigger double-tap feedback ripple
   const triggerFeedback = useCallback((type: 'rewind' | 'forward', amount: number) => {
@@ -135,8 +162,13 @@ export function usePlayerGestures({
       // Ignore right clicks or auxiliary buttons
       if (e.button !== 0 && e.pointerType === 'mouse') return;
 
+      // Ignore if press started on a button, seek bar, or input
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('button, input, [role="slider"], a, label')) {
+        return;
+      }
+
       if (e.pointerType === 'mouse') {
-        // Desktop mouse down: just track position
         pointerDownStateRef.current = {
           pointerId: e.pointerId,
           startX: e.clientX,
@@ -164,30 +196,37 @@ export function usePlayerGestures({
       };
       gestureModeRef.current = 'none';
 
-      // Setup Long-press (>=450ms, no movement) = 2x speed while held
-      if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = setTimeout(() => {
-        if (gestureModeRef.current === 'none') {
-          isLongPressingRef.current = true;
-          setIsLongPressing(true);
-          pin('pressing');
-          onTemporarySpeedChange(2.0);
-          if (typeof navigator !== 'undefined' && navigator.vibrate) {
-            try {
-              navigator.vibrate(10);
-            } catch {}
+      // Setup Long-press (>=400ms, no movement) = 2x speed while held
+      // Only triggered while playing
+      if (playerStatus === 'playing') {
+        if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = setTimeout(() => {
+          if (gestureModeRef.current === 'none') {
+            const video = videoRef.current;
+            if (video) {
+              savedPlaybackRateRef.current = video.playbackRate || 1;
+              video.playbackRate = 2;
+              isSpeedingRef.current = true;
+              longPressedRef.current = true;
+              setIsSpeeding(true);
+              pin('pressing');
+              if (typeof navigator !== 'undefined' && navigator.vibrate) {
+                try {
+                  navigator.vibrate(10);
+                } catch {}
+              }
+            }
           }
-        }
-      }, 450);
+        }, 400);
+      }
     },
-    [currentTime, controlsVisibleRef, pin, onTemporarySpeedChange]
+    [currentTime, controlsVisibleRef, playerStatus, videoRef, pin]
   );
 
   // ── POINTER MOVE ──
   const handlePointerMove = useCallback(
     (e: PointerEvent<HTMLDivElement>) => {
       if (e.pointerType === 'mouse') {
-        // Desktop mouse movement shows controls and starts 3s idle timer
         showControls(true);
         keepAlive();
         return;
@@ -205,7 +244,7 @@ export function usePlayerGestures({
         longPressTimerRef.current = null;
       }
 
-      if (isLongPressingRef.current) {
+      if (isSpeedingRef.current) {
         return; // finger is holding 2x speed
       }
 
@@ -228,7 +267,6 @@ export function usePlayerGestures({
           setSwipeSeekTime(target);
         }
       } else if (gestureModeRef.current === 'vertical_swipe') {
-        // Clamped follow-the-finger translate
         const clamped = Math.max(-100, Math.min(100, deltaY * 0.6));
         setDragTranslateY(clamped);
       }
@@ -258,7 +296,7 @@ export function usePlayerGestures({
         const dist = Math.hypot(e.clientX - pd.startX, e.clientY - pd.startY);
         pointerDownStateRef.current = null;
 
-        if (dist > 5) return; // was a drag/selection, ignore
+        if (dist > 5) return; // was a drag/selection
 
         const now = Date.now();
         const rect = e.currentTarget.getBoundingClientRect();
@@ -282,7 +320,6 @@ export function usePlayerGestures({
             onSeekRelative(seekAmount);
             triggerFeedback('forward', seekAmount);
           } else {
-            // center double click -> fullscreen
             if (onToggleFullscreen) onToggleFullscreen();
           }
           keepAlive();
@@ -301,11 +338,26 @@ export function usePlayerGestures({
       // ── TOUCH / PEN UP ──
       if (!pd || pd.pointerId !== e.pointerId) return;
 
-      if (isLongPressingRef.current) {
-        onTemporarySpeedChange(null);
-        isLongPressingRef.current = false;
-        setIsLongPressing(false);
+      // If long-press 2x was active, restore previous playbackRate and skip tap action
+      if (isSpeedingRef.current) {
+        const video = videoRef.current;
+        if (video) {
+          video.playbackRate = savedPlaybackRateRef.current;
+        }
+        isSpeedingRef.current = false;
+        setIsSpeeding(false);
         unpin('pressing');
+        // Prevent release from triggering tap toggle
+        setTimeout(() => {
+          longPressedRef.current = false;
+        }, 100);
+        pointerDownStateRef.current = null;
+        gestureModeRef.current = 'none';
+        return;
+      }
+
+      if (longPressedRef.current) {
+        longPressedRef.current = false;
         pointerDownStateRef.current = null;
         gestureModeRef.current = 'none';
         return;
@@ -359,14 +411,12 @@ export function usePlayerGestures({
           (isRight && lastDoubleTapTypeRef.current === 'forward'));
 
       if (isDoubleTap || isConsecutiveSeek) {
-        // Cancel single tap timeout
         if (touchTapTimerRef.current) {
           clearTimeout(touchTapTimerRef.current);
           touchTapTimerRef.current = null;
         }
 
         if (isLeft) {
-          // If controls were visible, hide them immediately so they don't flash during seek
           if (controlsVisibleRef.current) {
             hideControls();
           }
@@ -395,28 +445,24 @@ export function usePlayerGestures({
           triggerFeedback('forward', newAccum);
           lastTouchTapRef.current = null;
         } else {
-          // Center double tap: toggle play/pause with brief center icon pop, controls state unchanged
+          // Center double tap: toggle play/pause with pop
           onTogglePlay();
           triggerCenterPop();
           lastTouchTapRef.current = null;
         }
       } else {
-        // First tap!
+        // First tap
         lastTouchTapRef.current = { time: now, x: e.clientX, y: e.clientY };
 
         if (!pd.controlsWereVisible) {
-          // Tap when controls were HIDDEN:
-          // Show immediately (no delay) and start 3s timer (if playing).
-          // Do nothing more after the double-tap window.
+          // Tap when hidden -> reveal instantly
           showControls(true);
           touchTapTimerRef.current = setTimeout(() => {
             lastTouchTapRef.current = null;
             touchTapTimerRef.current = null;
           }, 250);
         } else {
-          // Tap when controls were VISIBLE:
-          // Wait for double-tap window (~250ms); if no second tap arrives, hide controls.
-          // (Works while playing AND while paused; while paused the video stays paused).
+          // Tap when visible -> wait for double-tap window, then hide
           touchTapTimerRef.current = setTimeout(() => {
             hideControls();
             lastTouchTapRef.current = null;
@@ -429,7 +475,7 @@ export function usePlayerGestures({
       gestureModeRef.current = 'none';
     },
     [
-      onTemporarySpeedChange,
+      videoRef,
       unpin,
       swipeSeekTime,
       onSeek,
@@ -447,7 +493,7 @@ export function usePlayerGestures({
     ]
   );
 
-  // ── POINTER CANCEL ──
+  // ── POINTER CANCEL / LEAVE ──
   const handlePointerCancel = useCallback(
     (e: PointerEvent<HTMLDivElement>) => {
       try {
@@ -460,11 +506,17 @@ export function usePlayerGestures({
         clearTimeout(longPressTimerRef.current);
         longPressTimerRef.current = null;
       }
-      if (isLongPressingRef.current) {
-        onTemporarySpeedChange(null);
-        isLongPressingRef.current = false;
-        setIsLongPressing(false);
+      if (isSpeedingRef.current) {
+        const video = videoRef.current;
+        if (video) {
+          video.playbackRate = savedPlaybackRateRef.current;
+        }
+        isSpeedingRef.current = false;
+        setIsSpeeding(false);
         unpin('pressing');
+        setTimeout(() => {
+          longPressedRef.current = false;
+        }, 100);
       }
       if (gestureModeRef.current === 'horizontal_swipe') {
         unpin('swiping');
@@ -477,21 +529,35 @@ export function usePlayerGestures({
       pointerDownStateRef.current = null;
       gestureModeRef.current = 'none';
     },
-    [onTemporarySpeedChange, unpin]
+    [videoRef, unpin]
   );
 
-  // ── POINTER LEAVE (DESKTOP) ──
   const handlePointerLeave = useCallback(() => {
-    // When desktop mouse leaves player: keep 3s timer running, do not hide instantly
+    // Desktop mouse leave: retain 3s timer
     keepAlive();
-  }, [keepAlive]);
+    // Also cancel any long-press if pointer left
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    if (isSpeedingRef.current) {
+      const video = videoRef.current;
+      if (video) {
+        video.playbackRate = savedPlaybackRateRef.current;
+      }
+      isSpeedingRef.current = false;
+      setIsSpeeding(false);
+      unpin('pressing');
+      setTimeout(() => {
+        longPressedRef.current = false;
+      }, 100);
+    }
+  }, [keepAlive, videoRef, unpin]);
 
-  // Context menu prevention (for long-press)
   const handleContextMenu = useCallback((e: MouseEvent) => {
     e.preventDefault();
   }, []);
 
-  // Teardown timers on unmount
   useEffect(() => {
     return () => {
       if (clearFeedbackTimeoutRef.current) clearTimeout(clearFeedbackTimeoutRef.current);
@@ -506,7 +572,8 @@ export function usePlayerGestures({
     feedback,
     isSwiping,
     swipeSeekTime,
-    isLongPressing,
+    isSpeeding,
+    isSpeedingRef,
     dragTranslateY,
     centerPop,
     triggerFeedback,

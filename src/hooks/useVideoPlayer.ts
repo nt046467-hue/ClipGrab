@@ -203,8 +203,9 @@ export function useVideoPlayer({ source, onEnded, autoPlay = true }: UseVideoPla
 
     const handleTimeUpdate = () => {
       const now = performance.now();
-      // Throttle React state updates to ~10 times per second for maximum performance
-      if (now - lastTimeUpdateRef.current > 100 || video.paused) {
+      // Throttle React state updates to ~1-2 times per second for the text timer display.
+      // The seekbar itself is animated directly at 60fps via RAF in ProgressBar without re-renders.
+      if (now - lastTimeUpdateRef.current > 600 || video.paused) {
         lastTimeUpdateRef.current = now;
         setCurrentTime(video.currentTime);
       }

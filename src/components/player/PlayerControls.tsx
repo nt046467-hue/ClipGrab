@@ -1,6 +1,6 @@
 // PlayerControls.tsx
-// YouTube-style controls overlay with pointer-events: none root,
-// pointer-events: auto interactive controls, opacity/visibility fade, and auto-hide keepAlive
+// YouTube-style controls overlay with absolute positioning,
+// seekbar above buttons, 40x40px touch targets, and vertically centered transport
 
 import React, { useState } from 'react';
 import {
@@ -41,6 +41,7 @@ export interface PlayerControlsProps {
   hasSubtitles: boolean;
   captionsActive: boolean;
   seekAmount: number;
+  videoRef?: React.RefObject<HTMLVideoElement | null>;
   hasPrevious?: boolean;
   hasNext?: boolean;
   onPlay: () => void;
@@ -65,7 +66,7 @@ export interface PlayerControlsProps {
   onScrubEnd?: () => void;
 }
 
-export const PlayerControls: React.FC<PlayerControlsProps> = ({
+export const PlayerControls: React.FC<PlayerControlsProps> = React.memo(({
   visible,
   status,
   title,
@@ -80,6 +81,7 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
   hasSubtitles,
   captionsActive,
   seekAmount,
+  videoRef,
   hasPrevious,
   hasNext,
   onPlay,
@@ -123,12 +125,13 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
       >
         <button
           type="button"
-          onClick={() => {
+          onClick={(e) => {
+            e.stopPropagation();
             setIsLocked(false);
             onUnpin?.('locked');
             onInteract();
           }}
-          className={`flex items-center gap-2 px-3.5 py-2 rounded-2xl bg-black/80 border border-white/20 text-white font-bold text-xs backdrop-blur-md shadow-2xl active:scale-95 transition-all pointer-events-auto cursor-pointer`}
+          className="min-w-[40px] min-h-[40px] flex items-center gap-2 px-3.5 py-2 rounded-2xl bg-black/80 border border-white/20 text-white font-bold text-xs backdrop-blur-md shadow-2xl active:scale-95 transition-all pointer-events-auto cursor-pointer"
         >
           <Unlock className="w-4 h-4 text-amber-400" />
           <span>Unlock Screen</span>
@@ -139,28 +142,29 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
 
   return (
     <div
-      className={`absolute inset-0 z-30 flex flex-col justify-between p-3 sm:p-5 transition-[opacity,visibility] duration-200 ease-out pointer-events-none ${
+      className={`absolute inset-0 z-30 pointer-events-none transition-[opacity,visibility] duration-200 ease-out select-none ${
         visible ? 'opacity-100 visible' : 'opacity-0 invisible'
       }`}
       style={{
         visibility: visible ? 'visible' : 'hidden',
         opacity: visible ? 1 : 0,
-        // YouTube-accurate gradient
         background:
-          'linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.3) 18%, transparent 38%, transparent 62%, rgba(0,0,0,0.25) 82%, rgba(0,0,0,0.65) 100%)',
+          'linear-gradient(to top, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.35) 20%, transparent 40%, transparent 60%, rgba(0,0,0,0.3) 80%, rgba(0,0,0,0.7) 100%)',
       }}
     >
-      {/* ── Top Bar ── */}
+      {/* ── Top Bar (Pinned to Top) ── */}
       <div
-        className={`flex items-center justify-between gap-3 text-white ${
-          isFullscreen ? 'pt-safe' : 'pt-1 sm:pt-2'
-        }`}
+        className="absolute top-0 inset-x-0 px-3 pt-2 sm:pt-3 flex items-center justify-between text-white pointer-events-none z-10"
+        style={{
+          paddingTop: isFullscreen ? 'max(0.5rem, env(safe-area-inset-top, 0px))' : undefined,
+        }}
       >
         {/* Back / Minimize and Title */}
-        <div className="flex items-center gap-2 min-w-0 flex-1">
+        <div className="flex items-center gap-1.5 min-w-0 flex-1">
           <button
             type="button"
-            onClick={() => {
+            onClick={(e) => {
+              e.stopPropagation();
               onInteract();
               if (isFullscreen) {
                 onToggleFullscreen();
@@ -172,7 +176,7 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
             }}
             aria-label={isFullscreen ? 'Exit fullscreen' : 'Minimize player'}
             title={isFullscreen ? 'Exit fullscreen (Esc)' : 'Minimize to Mini Player'}
-            className="p-2 rounded-full hover:bg-white/10 active:scale-95 transition-all text-white/90 hover:text-white shrink-0 cursor-pointer pointer-events-auto"
+            className="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-full hover:bg-white/10 active:scale-95 transition-all text-white/90 hover:text-white shrink-0 cursor-pointer pointer-events-auto"
           >
             {isFullscreen ? (
               <ChevronLeft className="w-6 h-6" />
@@ -180,28 +184,29 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
               <ChevronDown className="w-6 h-6" />
             )}
           </button>
-          <div className="min-w-0 flex-1 pointer-events-none">
-            <h2 className="font-headline font-bold text-sm sm:text-base text-white truncate" title={title}>
+          <div className="min-w-0 flex-1 pointer-events-none pr-2">
+            <h2 className="font-headline font-bold text-xs sm:text-sm text-white truncate" title={title}>
               {title}
             </h2>
             {author && (
-              <p className="text-[11px] text-white/50 truncate">{author}</p>
+              <p className="text-[10px] sm:text-[11px] text-white/50 truncate">{author}</p>
             )}
           </div>
         </div>
 
         {/* Top Right Actions */}
-        <div className="flex items-center gap-1 shrink-0 pointer-events-auto">
+        <div className="flex items-center gap-0.5 shrink-0 pointer-events-auto">
           {/* Lock Screen */}
           <button
             type="button"
-            onClick={() => {
+            onClick={(e) => {
+              e.stopPropagation();
               setIsLocked(true);
               onPin?.('locked');
               onInteract();
             }}
             aria-label="Lock controls"
-            className="p-2 rounded-full text-white/70 hover:text-white hover:bg-white/10 active:scale-95 transition-all cursor-pointer"
+            className="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-full text-white/70 hover:text-white hover:bg-white/10 active:scale-95 transition-all cursor-pointer"
             title="Lock player controls"
           >
             <Lock className="w-4 h-4 sm:w-5 sm:h-5" />
@@ -210,12 +215,13 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
           {/* Share */}
           <button
             type="button"
-            onClick={() => {
+            onClick={(e) => {
+              e.stopPropagation();
               onShare();
               onInteract();
             }}
             aria-label="Share video"
-            className="p-2 rounded-full text-white/70 hover:text-white hover:bg-white/10 active:scale-95 transition-all cursor-pointer"
+            className="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-full text-white/70 hover:text-white hover:bg-white/10 active:scale-95 transition-all cursor-pointer"
             title="Share video"
           >
             <Share2 className="w-4 h-4 sm:w-5 sm:h-5" />
@@ -224,12 +230,13 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
           {/* Settings */}
           <button
             type="button"
-            onClick={() => {
+            onClick={(e) => {
+              e.stopPropagation();
               onOpenSettings();
               onInteract();
             }}
             aria-label="Player settings"
-            className="p-2 rounded-full text-white/70 hover:text-white hover:bg-white/10 active:scale-95 transition-all cursor-pointer"
+            className="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-full text-white/70 hover:text-white hover:bg-white/10 active:scale-95 transition-all cursor-pointer"
             title="Settings"
           >
             <Settings className="w-4 h-4 sm:w-5 sm:h-5" />
@@ -237,35 +244,37 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
         </div>
       </div>
 
-      {/* ── Center Transport Controls ── */}
-      <div className="flex items-center justify-center gap-6 sm:gap-10 text-white pointer-events-none">
+      {/* ── Center Transport Controls (Vertically Centered in Video Area) ── */}
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center gap-6 sm:gap-10 text-white pointer-events-none z-10">
         {/* Previous Video in Queue */}
         {hasPrevious && onPrevious && (
           <button
             type="button"
-            onClick={() => {
+            onClick={(e) => {
+              e.stopPropagation();
               onPrevious();
               onInteract();
             }}
             aria-label="Previous video"
-            className="p-2.5 rounded-full hover:bg-white/10 active:scale-90 transition-all text-white/80 hover:text-white pointer-events-auto cursor-pointer"
+            className="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-full hover:bg-white/10 active:scale-90 transition-all text-white/80 hover:text-white pointer-events-auto cursor-pointer"
           >
             <SkipBack className="w-5 h-5 sm:w-6 sm:h-6" />
           </button>
         )}
 
-        {/* Rewind */}
+        {/* Rewind 10s */}
         <button
           type="button"
-          onClick={() => {
+          onClick={(e) => {
+            e.stopPropagation();
             onSeekRelative(-seekAmount);
             onInteract();
           }}
           aria-label={`Rewind ${seekAmount} seconds`}
-          className="relative p-2.5 rounded-full hover:bg-white/10 active:scale-90 transition-all text-white/90 hover:text-white flex flex-col items-center group pointer-events-auto cursor-pointer"
+          className="min-w-[44px] min-h-[44px] flex flex-col items-center justify-center rounded-full hover:bg-white/10 active:scale-90 transition-all text-white/90 hover:text-white group pointer-events-auto cursor-pointer"
         >
           <svg
-            className="w-7 h-7 sm:w-9 sm:h-9"
+            className="w-7 h-7 sm:w-8 sm:h-8"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -282,7 +291,8 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
         {/* Primary Play/Pause / Buffering Button */}
         <button
           type="button"
-          onClick={() => {
+          onClick={(e) => {
+            e.stopPropagation();
             if (!isBuffering) {
               if (isPlaying) onPause();
               else onPlay();
@@ -291,31 +301,32 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
           }}
           aria-label={isBuffering ? 'Loading video' : isPlaying ? 'Pause' : 'Play'}
           disabled={isBuffering}
-          className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-primary/90 hover:bg-primary text-white flex items-center justify-center shadow-[0_0_30px_rgba(99,102,241,0.6)] active:scale-95 hover:scale-105 transition-all border-2 border-white/20 disabled:opacity-85 pointer-events-auto cursor-pointer"
+          className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-primary/90 hover:bg-primary text-white flex items-center justify-center shadow-[0_0_24px_rgba(99,102,241,0.6)] active:scale-95 hover:scale-105 transition-all border-2 border-white/20 disabled:opacity-85 pointer-events-auto cursor-pointer"
         >
           {isBuffering ? (
-            <Loader2 className="w-7 h-7 sm:w-9 sm:h-9 text-white animate-spin" />
+            <Loader2 className="w-6 h-6 sm:w-8 sm:h-8 text-white animate-spin" />
           ) : isEnded ? (
-            <RotateCcw className="w-7 h-7 sm:w-9 sm:h-9" />
+            <RotateCcw className="w-6 h-6 sm:w-8 sm:h-8" />
           ) : isPlaying ? (
-            <Pause className="w-7 h-7 sm:w-9 sm:h-9 fill-white" />
+            <Pause className="w-6 h-6 sm:w-8 sm:h-8 fill-white" />
           ) : (
-            <Play className="w-7 h-7 sm:w-9 sm:h-9 fill-white ml-1" />
+            <Play className="w-6 h-6 sm:w-8 sm:h-8 fill-white ml-0.5" />
           )}
         </button>
 
-        {/* Forward */}
+        {/* Forward 10s */}
         <button
           type="button"
-          onClick={() => {
+          onClick={(e) => {
+            e.stopPropagation();
             onSeekRelative(seekAmount);
             onInteract();
           }}
           aria-label={`Fast forward ${seekAmount} seconds`}
-          className="relative p-2.5 rounded-full hover:bg-white/10 active:scale-90 transition-all text-white/90 hover:text-white flex flex-col items-center group pointer-events-auto cursor-pointer"
+          className="min-w-[44px] min-h-[44px] flex flex-col items-center justify-center rounded-full hover:bg-white/10 active:scale-90 transition-all text-white/90 hover:text-white group pointer-events-auto cursor-pointer"
         >
           <svg
-            className="w-7 h-7 sm:w-9 sm:h-9"
+            className="w-7 h-7 sm:w-8 sm:h-8"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -333,35 +344,42 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
         {hasNext && onNext && (
           <button
             type="button"
-            onClick={() => {
+            onClick={(e) => {
+              e.stopPropagation();
               onNext();
               onInteract();
             }}
             aria-label="Next video"
-            className="p-2.5 rounded-full hover:bg-white/10 active:scale-90 transition-all text-white/80 hover:text-white pointer-events-auto cursor-pointer"
+            className="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-full hover:bg-white/10 active:scale-90 transition-all text-white/80 hover:text-white pointer-events-auto cursor-pointer"
           >
             <SkipForward className="w-5 h-5 sm:w-6 sm:h-6" />
           </button>
         )}
       </div>
 
-      {/* ── Bottom Bar: Scrubber & Secondary Controls ── */}
-      <div className={`space-y-1.5 ${isFullscreen ? 'pb-safe' : 'pb-1'}`}>
-        {/* Scrubber */}
+      {/* ── Bottom Bar: Seekbar Above + Button Row Below (Pinned to Bottom) ── */}
+      <div
+        className="absolute bottom-0 inset-x-0 px-3 pb-2 sm:pb-3 flex flex-col pointer-events-none z-10"
+        style={{
+          paddingBottom: isFullscreen ? 'max(0.5rem, env(safe-area-inset-bottom, 0px))' : '0.5rem',
+        }}
+      >
+        {/* Scrubber sits strictly ABOVE the button row */}
         <ProgressBar
           currentTime={currentTime}
           duration={duration}
           bufferedEnd={bufferedEnd}
+          videoRef={videoRef}
           onSeek={onSeek}
           onInteract={onInteract}
           onScrubStart={onScrubStart}
           onScrubEnd={onScrubEnd}
         />
 
-        {/* Controls Row */}
-        <div className="flex items-center justify-between text-white text-xs sm:text-sm">
+        {/* Buttons & Time Row */}
+        <div className="flex items-center justify-between text-white text-xs sm:text-sm -mt-0.5">
           {/* Left: Time & Volume */}
-          <div className="flex items-center gap-2 sm:gap-3">
+          <div className="flex items-center gap-2">
             <VolumeControl
               volume={volume}
               muted={muted}
@@ -370,7 +388,7 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
               onInteract={onInteract}
             />
 
-            <div className="font-mono text-xs text-white/80 tabular-nums select-none pointer-events-none">
+            <div className="font-mono text-[11px] sm:text-xs text-white/80 tabular-nums select-none pointer-events-none ml-1">
               <span>{formatTime(currentTime)}</span>
               <span className="text-white/40 mx-1">/</span>
               <span>{formatTime(duration)}</span>
@@ -378,17 +396,18 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
           </div>
 
           {/* Right: Subtitles, PiP, Fullscreen */}
-          <div className="flex items-center gap-1 sm:gap-2 pointer-events-auto">
+          <div className="flex items-center gap-0.5 pointer-events-auto">
             {/* Captions Toggle */}
             {hasSubtitles && (
               <button
                 type="button"
-                onClick={() => {
+                onClick={(e) => {
+                  e.stopPropagation();
                   onToggleCaptions();
                   onInteract();
                 }}
                 aria-label="Subtitles"
-                className={`p-1.5 sm:p-2 rounded-xl active:scale-95 transition-all cursor-pointer ${
+                className={`min-w-[40px] min-h-[40px] flex items-center justify-center rounded-xl active:scale-95 transition-all cursor-pointer ${
                   captionsActive
                     ? 'text-primary bg-primary/20'
                     : 'text-white/70 hover:text-white hover:bg-white/10'
@@ -403,28 +422,30 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
             {isPiPSupported && (
               <button
                 type="button"
-                onClick={() => {
+                onClick={(e) => {
+                  e.stopPropagation();
                   onTogglePiP();
                   onInteract();
                 }}
                 aria-label="Picture in picture"
-                className="p-1.5 sm:p-2 rounded-xl text-white/70 hover:text-white hover:bg-white/10 active:scale-95 transition-all cursor-pointer"
+                className="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-xl text-white/70 hover:text-white hover:bg-white/10 active:scale-95 transition-all cursor-pointer"
                 title="Picture-in-Picture"
               >
                 <PictureInPicture className="w-4 h-4 sm:w-5 sm:h-5" />
               </button>
             )}
 
-            {/* Fullscreen */}
+            {/* Fullscreen Button */}
             <button
               type="button"
-              onClick={() => {
+              onClick={(e) => {
+                e.stopPropagation();
                 onToggleFullscreen();
                 onInteract();
               }}
               aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
-              className="p-1.5 sm:p-2 rounded-xl text-white/80 hover:text-white hover:bg-white/10 active:scale-95 transition-all cursor-pointer"
-              title="Fullscreen"
+              className="min-w-[40px] min-h-[40px] flex items-center justify-center rounded-xl text-white/80 hover:text-white hover:bg-white/10 active:scale-95 transition-all cursor-pointer"
+              title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
             >
               {isFullscreen ? (
                 <Minimize className="w-4 h-4 sm:w-5 sm:h-5" />
@@ -437,4 +458,6 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
       </div>
     </div>
   );
-};
+});
+
+PlayerControls.displayName = 'PlayerControls';

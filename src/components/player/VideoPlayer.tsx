@@ -1,7 +1,7 @@
 // VideoPlayer.tsx
 // Master production-grade ClipGrab video player component for mobile & desktop
-// Features YouTube mobile player parity: single gesture layer, unified controls visibility
-// state machine, double-tap seek, 2x long-press, swipe seek & minimize, keyboard shortcuts
+// Features: real Fullscreen API wrapper, 2x long-press with ratechange protection,
+// seekbar above buttons, 40px+ touch targets, 60fps RAF progress bar, and 3s auto-hide
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
@@ -109,13 +109,13 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     },
   });
 
-  // Fullscreen controller attached to the .player-shell
-  const fullscreen = useFullscreen(containerRef, player.isVideoLandscape);
+  // Real Fullscreen controller attached to the .player-shell wrapper
+  const fullscreen = useFullscreen(containerRef, player.isVideoLandscape, player.videoRef);
 
   // PiP controller
   const pip = usePictureInPicture(player.videoRef);
 
-  // ── Unified Controls Visibility Hook (Single source of truth) ──
+  // ── Unified Controls Visibility Hook ──
   const controls = useControlsVisibility({
     status: player.status,
     sourceId: source.id,
@@ -140,43 +140,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
       // ignore storage errors
     }
   }, [source.id]);
-
-  // ── Fullscreen toggle with playback preservation ──
-  const wasPlayingAtFullscreenRef = useRef(false);
-
-  const handleToggleFullscreen = useCallback(async () => {
-    const isPlaying =
-      player.status === 'playing' ||
-      player.status === 'buffering' ||
-      (!!player.videoRef.current && !player.videoRef.current.paused && player.status !== 'ended');
-    if (isPlaying) {
-      wasPlayingAtFullscreenRef.current = true;
-    }
-    await fullscreen.toggleFullscreen();
-  }, [player.status, player.videoRef, fullscreen]);
-
-  // Resume playback if video was active before entering/exiting fullscreen
-  useEffect(() => {
-    if (wasPlayingAtFullscreenRef.current) {
-      const vid = player.videoRef.current;
-      const attemptResume = () => {
-        if (vid && vid.paused && player.status !== 'error' && player.status !== 'ended') {
-          vid.play().catch(() => {});
-        }
-      };
-      const t1 = setTimeout(attemptResume, 60);
-      const t2 = setTimeout(attemptResume, 180);
-      const t3 = setTimeout(() => {
-        attemptResume();
-        wasPlayingAtFullscreenRef.current = false;
-      }, 350);
-      return () => {
-        clearTimeout(t1);
-        clearTimeout(t2);
-        clearTimeout(t3);
-      };
-    }
-  }, [fullscreen.isFullscreen, player.status, player.videoRef]);
 
   // ── Screen Wake Lock API (keeps screen awake while playing) ──
   const wakeLockRef = useRef<any>(null);
@@ -241,26 +204,19 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     }, 1100);
   }, []);
 
-  // ── Unified Gesture Recognizer ──
+  // ── Unified Gesture Recognizer with Direct Video 2x Speed ──
   const gestures = usePlayerGestures({
     seekAmount: player.settings.seekAmount,
     duration: player.duration,
     currentTime: player.currentTime,
     isFullscreen: fullscreen.isFullscreen,
+    playerStatus: player.status,
+    videoRef: player.videoRef,
     onSeek: player.seek,
     onSeekRelative: player.seekRelative,
     onTogglePlay: player.togglePlay,
-    onToggleFullscreen: handleToggleFullscreen,
+    onToggleFullscreen: fullscreen.toggleFullscreen,
     onMinimize,
-    onTemporarySpeedChange: (speed) => {
-      const video = player.videoRef.current;
-      if (!video) return;
-      if (speed !== null) {
-        video.playbackRate = speed;
-      } else {
-        video.playbackRate = player.settings.playbackRate;
-      }
-    },
     controlsVisibleRef: controls.visibleRef,
     showControls: controls.show,
     hideControls: controls.hide,
@@ -269,7 +225,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     unpin: controls.unpin,
   });
 
-  // ── Desktop Keyboard Hotkeys (Space, K, J, L, Left, Right, Up, Down, 0-9, <, >, Home, End) ──
+  // ── Desktop Keyboard Hotkeys (F for Fullscreen, P for PiP, Space, K, J, L, etc.) ──
   useKeyboardControls(
     {
       onTogglePlay: () => {
@@ -312,7 +268,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         player.toggleMute();
         showToast(!player.settings.muted ? 'Muted' : 'Unmuted');
       },
-      onToggleFullscreen: handleToggleFullscreen,
+      onToggleFullscreen: fullscreen.toggleFullscreen,
       onTogglePiP: pip.togglePiP,
       onToggleCaptions: () => {
         if (subtitleTracks.length > 0) {
@@ -348,7 +304,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     !settingsOpen && !subtitlesOpen
   );
 
-  // Native Media Session integration (lock screen controls)
+  // Native Media Session integration
   useMediaSession({
     title: source.title,
     artist: source.author || 'ClipGrab Player',
@@ -529,9 +485,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 : '100%',
             touchAction: fullscreen.isFullscreen ? 'none' : 'pan-y',
             WebkitTapHighlightColor: 'transparent',
-            // Hide mouse cursor on desktop fullscreen when controls are hidden
             cursor: fullscreen.isFullscreen && !controls.visible ? 'none' : 'default',
-            // Follow-the-finger translate in windowed mode
             transform:
               !fullscreen.isFullscreen && gestures.dragTranslateY !== 0
                 ? `translateY(${gestures.dragTranslateY}px)`
@@ -541,7 +495,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
         >
           {/* Main Gesture & Video Layer — covers the whole player at all times */}
           <div
-            className="relative w-full h-full flex items-center justify-center overflow-hidden bg-black select-none touch-none"
+            className="relative w-full h-full flex items-center justify-center overflow-hidden bg-black select-none touch-manipulation"
             onPointerDown={gestures.handlePointerDown}
             onPointerMove={gestures.handlePointerMove}
             onPointerUp={gestures.handlePointerUp}
@@ -549,6 +503,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             onPointerLeave={gestures.handlePointerLeave}
             onContextMenu={gestures.handleContextMenu}
             style={{
+              touchAction: 'manipulation',
               WebkitTouchCallout: 'none',
               userSelect: 'none',
             }}
@@ -584,7 +539,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             {/* Double-tap Seek Feedback Ripple (mobile) */}
             <SeekOverlay feedback={gestures.feedback} />
 
-            {/* Double-tap Center Play/Pause Pop Icon (YouTube style) */}
+            {/* Double-tap Center Play/Pause Pop Icon */}
             {gestures.centerPop && (
               <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-40 pointer-events-none animate-in zoom-in-75 fade-in duration-150">
                 <div className="w-16 h-16 rounded-full bg-black/70 backdrop-blur-md border border-white/20 flex items-center justify-center shadow-2xl text-white">
@@ -598,7 +553,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             )}
 
             {/* Long-press 2x Speed Pill (YouTube style) */}
-            {gestures.isLongPressing && (
+            {gestures.isSpeeding && (
               <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 px-3.5 py-1.5 rounded-full bg-black/85 backdrop-blur-md border border-white/20 text-white flex items-center gap-2 text-xs font-bold tracking-wide shadow-2xl animate-in fade-in zoom-in-95 pointer-events-none select-none">
                 <span>2x</span>
                 <span className="text-primary flex items-center">▶▶</span>
@@ -621,7 +576,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               </div>
             )}
 
-            {/* Resume Prompt Banner — z-40 so it always sits above the controls overlay (z-30) */}
+            {/* Resume Prompt Banner */}
             {player.resumePrompt && (
               <div
                 className="absolute top-16 left-4 right-4 sm:left-auto sm:right-6 sm:w-80 z-40 p-4 rounded-2xl bg-[#0d1017]/98 border border-white/20 shadow-2xl backdrop-blur-xl animate-in slide-in-from-top-4 duration-300 pointer-events-auto"
@@ -708,7 +663,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                     </p>
 
                     <div className="flex flex-wrap justify-center gap-3 pt-2">
-                      {/* Hidden re-link file input */}
                       <input
                         type="file"
                         id="cg-relink-file-input"
@@ -811,7 +765,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               </div>
             )}
 
-            {/* Controls Overlay (position: absolute relative to .player-shell) */}
+            {/* Controls Overlay */}
             {player.status !== 'error' && player.status !== 'ended' && (
               <PlayerControls
                 visible={controls.visible}
@@ -828,6 +782,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 hasSubtitles={subtitleTracks.length > 0}
                 captionsActive={activeSubtitleTrackId !== null}
                 seekAmount={player.settings.seekAmount}
+                videoRef={player.videoRef}
                 hasPrevious={!!previousItem}
                 hasNext={!!nextItem}
                 onPlay={player.play}
@@ -836,7 +791,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 onSeekRelative={player.seekRelative}
                 onVolumeChange={player.setVolume}
                 onToggleMute={player.toggleMute}
-                onToggleFullscreen={handleToggleFullscreen}
+                onToggleFullscreen={fullscreen.toggleFullscreen}
                 onTogglePiP={pip.togglePiP}
                 onToggleCaptions={() => {
                   if (subtitleTracks.length > 0) {
@@ -851,7 +806,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 onMinimize={onMinimize}
                 onPrevious={onPlayPrevious}
                 onNext={onPlayNext}
-                onInteract={controls.keepAlive}
+                onInteract={() => controls.keepAlive(3000)}
                 onPin={controls.pin}
                 onUnpin={controls.unpin}
                 onScrubStart={() => controls.pin('scrubbing')}
@@ -859,8 +814,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
               />
             )}
 
-            {/* ── Always-visible YouTube-style thin progress bar at bottom ──
-                Visible when controls are hidden; respects safe-area-inset-bottom in fullscreen */}
+            {/* Always-visible thin progress bar at bottom when controls are hidden */}
             {player.status !== 'error' && player.duration > 0 && (
               <div
                 className={`absolute left-0 right-0 h-[3px] z-20 pointer-events-none transition-opacity duration-200 ${
@@ -871,12 +825,10 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
                 }}
                 aria-hidden="true"
               >
-                {/* Buffer */}
                 <div
                   className="absolute top-0 left-0 h-full bg-white/25"
                   style={{ width: `${Math.min(100, (player.bufferedEnd / player.duration) * 100)}%` }}
                 />
-                {/* Progress */}
                 <div
                   className="absolute top-0 left-0 h-full bg-primary"
                   style={{ width: `${Math.min(100, (player.currentTime / player.duration) * 100)}%` }}

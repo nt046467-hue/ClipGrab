@@ -1,5 +1,7 @@
 // useControlsVisibility.ts
-// Single source of truth for ClipGrab player controls visibility & auto-hide state machine
+// Controls visibility & auto-hide state machine
+// Ensures controls hide ~3s after the last interaction while playing,
+// and stay visible only while paused or while dragging the seek bar.
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { PlayerStatus } from './useVideoPlayer';
@@ -16,7 +18,7 @@ export interface UseControlsVisibilityResult {
   show: (autoHide?: boolean) => void;
   hide: () => void;
   toggle: () => void;
-  keepAlive: () => void;
+  keepAlive: (customDuration?: number) => void;
   pin: (reason: string) => void;
   unpin: (reason: string) => void;
   isPinned: boolean;
@@ -48,7 +50,7 @@ export function useControlsVisibility({
   const startTimer = useCallback(
     (duration = autoHideDuration) => {
       clearTimer();
-      // Auto-hide ONLY when playing and completely unpinned
+      // Auto-hide ONLY when playing and completely unpinned (e.g. not scrubbing)
       if (status === 'playing' && pinsRef.current.size === 0) {
         timerRef.current = setTimeout(() => {
           setVisibleSync(false);
@@ -76,11 +78,17 @@ export function useControlsVisibility({
     setVisibleSync(false);
   }, [clearTimer, setVisibleSync]);
 
-  const keepAlive = useCallback(() => {
-    if (visibleRef.current && status === 'playing' && pinsRef.current.size === 0) {
-      startTimer();
-    }
-  }, [status, startTimer]);
+  const keepAlive = useCallback(
+    (customDuration?: number) => {
+      setVisibleSync(true);
+      if (status === 'playing' && pinsRef.current.size === 0) {
+        startTimer(customDuration);
+      } else {
+        clearTimer();
+      }
+    },
+    [status, startTimer, clearTimer, setVisibleSync]
+  );
 
   const toggle = useCallback(() => {
     if (visibleRef.current) {
@@ -94,23 +102,22 @@ export function useControlsVisibility({
     (reason: string) => {
       pinsRef.current.add(reason);
       clearTimer();
+      setVisibleSync(true);
     },
-    [clearTimer]
+    [clearTimer, setVisibleSync]
   );
 
   const unpin = useCallback(
     (reason: string) => {
       pinsRef.current.delete(reason);
-      if (visibleRef.current && status === 'playing' && pinsRef.current.size === 0) {
+      if (status === 'playing' && pinsRef.current.size === 0) {
         startTimer();
       }
     },
     [status, startTimer]
   );
 
-  // React to status changes:
-  // When status becomes paused/ended/buffering/error: show controls and cancel the timer.
-  // When status returns to 'playing': start the 3s timer.
+  // Status transitions
   useEffect(() => {
     if (
       status === 'paused' ||
@@ -127,14 +134,14 @@ export function useControlsVisibility({
     }
   }, [status, clearTimer, setVisibleSync, startTimer]);
 
-  // Video source change: reset pins & timer, show controls
+  // Source change
   useEffect(() => {
     clearTimer();
     pinsRef.current.clear();
     setVisibleSync(true);
   }, [sourceId, clearTimer, setVisibleSync]);
 
-  // Tab refocus (visibilitychange): show controls for 3s when tab becomes visible again
+  // Tab refocus (show for 3s when returning to tab)
   useEffect(() => {
     if (typeof document === 'undefined') return;
 
